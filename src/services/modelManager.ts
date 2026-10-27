@@ -46,3 +46,21 @@ export async function ensureModelsReady(
 export async function deleteModel(language: string): Promise<void> {
   await Translation.deleteDownloadedModel({ language: language as Language })
 }
+
+// ---- 語言包管理頁用 ----
+
+/** 已下載的語言清單（插件回傳格式異常時回空陣列） */
+export async function getDownloadedLanguages(): Promise<string[]> {
+  const result = await Translation.getDownloadedModels()
+  return Array.isArray(result?.languages) ? result.languages : []
+}
+
+/** 下載單一語言包（各約 30MB，建議 WiFi） */
+export async function downloadLanguage(language: string): Promise<void> {
+  await Translation.downloadModel({ language: language as Language })
+}
+
+/** 刪除單一語言包（釋放空間） */
+export async function removeLanguage(language: string): Promise<void> {
+  await Translation.deleteDownloadedModel({ language: language as Language })
+}

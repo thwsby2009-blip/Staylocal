@@ -1,10 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { ensureModelsReady } from './modelManager'
+import {
+  ensureModelsReady,
+  getDownloadedLanguages,
+  downloadLanguage,
+  removeLanguage,
+} from './modelManager'
 
 vi.mock('@capacitor-mlkit/translation', () => ({
   Translation: {
     downloadModel: vi.fn(),
     getDownloadedModels: vi.fn(),
+    deleteDownloadedModel: vi.fn(),
   },
   Language: {
     Chinese: 'zh',
@@ -54,5 +60,43 @@ describe('ensureModelsReady', () => {
     const onProgress = vi.fn()
     await ensureModelsReady('en', 'zh', { onProgress })
     expect(onProgress).toHaveBeenCalledWith({ language: 'zh' })
+  })
+})
+
+describe('語言包管理（getDownloadedLanguages / downloadLanguage / removeLanguage）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('getDownloadedLanguages 回已下載清單', async () => {
+    mockGetDownloaded.mockResolvedValueOnce({ languages: ['en', 'zh'] })
+    expect(await getDownloadedLanguages()).toEqual(['en', 'zh'])
+  })
+
+  it('getDownloadedLanguages 壞資料（無 languages 欄位）→ 回空陣列', async () => {
+    mockGetDownloaded.mockResolvedValueOnce({} as never)
+    expect(await getDownloadedLanguages()).toEqual([])
+  })
+
+  it('downloadLanguage 呼叫插件下載', async () => {
+    mockDownload.mockResolvedValueOnce(undefined)
+    await downloadLanguage('ja')
+    expect(mockDownload).toHaveBeenCalledWith({ language: 'ja' })
+  })
+
+  it('downloadLanguage 拋錯向上傳播', async () => {
+    mockDownload.mockRejectedValueOnce(new Error('no wifi'))
+    await expect(downloadLanguage('ja')).rejects.toThrow('no wifi')
+  })
+
+  it('removeLanguage 呼叫插件刪除', async () => {
+    const { Translation } = await import('@capacitor-mlkit/translation')
+    ;(Translation.deleteDownloadedModel as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      undefined,
+    )
+    await removeLanguage('ja')
+    expect(Translation.deleteDownloadedModel).toHaveBeenCalledWith({
+      language: 'ja',
+    })
   })
 })
