@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#FFFFFF</color>
+    <!-- 與 icon 主視覺的青色底一致，避免啟動器縮放前景時露出白邊 -->
+    <color name="ic_launcher_background">#02B9BF</color>
 </resources>
