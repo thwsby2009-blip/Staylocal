@@ -10,9 +10,12 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@capacitor-mlkit/text-recognition": "^8.2.1",
     "@capacitor-mlkit/translation": "^8.2.1",
     "@capacitor/android": "^8.5.3",
+    "@capacitor/camera": "^8.2.6",
     "@capacitor/core": "^8.5.3",
+    "@capacitor/filesystem": "^8.1.5",
     "opencc-js": "^1.4.2",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
