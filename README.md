@@ -1,8 +1,10 @@
-# 旅遊翻譯本 / Travel Translator
+# 離線翻譯 / Offline Translator
 
 完全離線的手機翻譯 app：拍照或輸入文字，翻譯全部在你的裝置上完成。零 API key、零帳號、零資料上傳。
 
-A fully offline mobile translation app. Photo or text — everything runs on your device. No API keys, no accounts, no data uploaded.
+**應用場景以旅遊為主**——菜單、路標、看板即拍即譯，譯文與照片一起收藏；任何無網路的場合（飛航、國外無漫遊、機密環境）同樣適用。UI 因此採旅遊相簿風格。
+
+A fully offline mobile translation app. Photo or text — everything runs on your device. No API keys, no accounts, no data uploaded. Travel is its primary use case (menus, signs, notices saved as a photo deck), but it works anywhere without a network.
 
 ## 功能 / Features
 

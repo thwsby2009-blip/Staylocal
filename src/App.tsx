@@ -180,7 +180,7 @@ function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1>旅遊翻譯本</h1>
+        <h1>離線翻譯</h1>
         <p className="tagline">離線拍照翻譯 · 資料不出裝置</p>
       </header>
 
