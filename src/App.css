@@ -308,3 +308,85 @@ footer p {
   line-height: 1.5;
   margin: 0;
 }
+
+/* 語言包管理頁 */
+.packs-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.packs-hint {
+  font-size: 12.5px;
+  color: var(--text-2);
+  line-height: 1.6;
+  margin: 0;
+  padding: 10px 14px;
+  background: var(--accent-soft);
+  border-radius: 10px;
+}
+
+.pack-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pack-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 14px;
+}
+
+.pack-name {
+  font-size: 14.5px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pack-badge {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--ok);
+  background: #e8f3ea;
+  border-radius: 6px;
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+
+.pack-download,
+.pack-remove {
+  padding: 7px 16px;
+  font-size: 13px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pack-download {
+  color: #fff;
+  background: var(--accent);
+  font-weight: 600;
+}
+
+.pack-remove {
+  color: var(--error);
+  background: transparent;
+  border: 1px solid var(--border);
+}
+
+.pack-download:disabled,
+.pack-remove:disabled {
+  opacity: 0.5;
+}

@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useState } from 'react'
 import './App.css'
 import { translateText } from './services/translationService'
-import { ensureModelsReady } from './services/modelManager'
+import {
+  ensureModelsReady,
+  getDownloadedLanguages,
+  downloadLanguage,
+  removeLanguage,
+} from './services/modelManager'
 import { captureAndTranslate, type CaptureResult } from './services/photoFlow'
 import { listCards, deleteCard, type TravelCard } from './services/cardStore'
 import { LANGUAGES, languageName } from './languages'
 
-type Tab = 'collection' | 'text'
+type Tab = 'collection' | 'text' | 'packs'
 type Busy = null | 'downloading' | 'translating' | 'processing'
 
 function App() {
@@ -24,11 +29,58 @@ function App() {
   const [output, setOutput] = useState('')
   const [textError, setTextError] = useState('')
 
+  // 語言包管理
+  const [downloadedLangs, setDownloadedLangs] = useState<string[]>([])
+  const [packBusy, setPackBusy] = useState<string | null>(null)
+  const [packError, setPackError] = useState('')
+
   const refreshCards = useCallback(() => setCards(listCards()), [])
+
+  const refreshPacks = useCallback(async () => {
+    try {
+      setDownloadedLangs(await getDownloadedLanguages())
+    } catch {
+      // 原生層未就緒（如純瀏覽器預覽）時靜默
+    }
+  }, [])
 
   useEffect(() => {
     refreshCards()
   }, [refreshCards])
+
+  useEffect(() => {
+    if (tab === 'packs') void refreshPacks()
+  }, [tab, refreshPacks])
+
+  async function handleDownload(lang: string) {
+    setPackError('')
+    setPackBusy(lang)
+    try {
+      await downloadLanguage(lang)
+      await refreshPacks()
+    } catch (e) {
+      setPackError(
+        `${languageName(lang)}下載失敗：${e instanceof Error ? e.message : '請確認網路連線'}`,
+      )
+    } finally {
+      setPackBusy(null)
+    }
+  }
+
+  async function handleRemove(lang: string) {
+    setPackError('')
+    setPackBusy(lang)
+    try {
+      await removeLanguage(lang)
+      await refreshPacks()
+    } catch (e) {
+      setPackError(
+        `${languageName(lang)}刪除失敗：${e instanceof Error ? e.message : '請重試'}`,
+      )
+    } finally {
+      setPackBusy(null)
+    }
+  }
 
   async function handleCapture() {
     setNotice('')
@@ -137,11 +189,17 @@ function App() {
         >
           文字翻譯
         </button>
+        <button
+          className={tab === 'packs' ? 'tab active' : 'tab'}
+          onClick={() => setTab('packs')}
+        >
+          語言包
+        </button>
       </nav>
 
       {notice && <p className="notice">{notice}</p>}
 
-      {tab === 'collection' ? (
+      {tab === 'collection' && (
         <main className="collection">
           <div className="capture-panel">
             <div className="lang-row">{langSelectors('目標語言')}</div>
@@ -191,7 +249,8 @@ function App() {
             </ul>
           )}
         </main>
-      ) : (
+      )}
+      {tab === 'text' && (
         <main className="text-tab">
           <div className="lang-row">{langSelectors('目標語言')}</div>
 
@@ -220,6 +279,48 @@ function App() {
             <h2>翻譯結果</h2>
             <p className="output">{output || '—'}</p>
           </div>
+        </main>
+      )}
+      {tab === 'packs' && (
+        <main className="packs-tab">
+          <p className="packs-hint">
+            每個語言包約 30MB，下載後該語言即可離線翻譯。
+            建議出國前在 WiFi 環境預先下載。
+          </p>
+          {packError && <p className="error">{packError}</p>}
+          <ul className="pack-list">
+            {LANGUAGES.map((l) => {
+              const isDownloaded = downloadedLangs.includes(l.code)
+              const isBusy = packBusy === l.code
+              return (
+                <li key={l.code} className="pack-item">
+                  <span className="pack-name">
+                    {l.name}
+                    {isDownloaded && <em className="pack-badge">已下載</em>}
+                  </span>
+                  {isDownloaded ? (
+                    <button
+                      className="pack-remove"
+                      onClick={() => handleRemove(l.code)}
+                      disabled={packBusy !== null}
+                      aria-label={`刪除${l.name}語言包`}
+                    >
+                      {isBusy ? '處理中…' : '刪除'}
+                    </button>
+                  ) : (
+                    <button
+                      className="pack-download"
+                      onClick={() => handleDownload(l.code)}
+                      disabled={packBusy !== null}
+                      aria-label={`下載${l.name}語言包`}
+                    >
+                      {isBusy ? '下載中…' : '下載'}
+                    </button>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
         </main>
       )}
 
