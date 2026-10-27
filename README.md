@@ -11,6 +11,18 @@ A fully offline mobile translation app. Photo or text — everything runs on you
 - **⌨️ 文字翻譯**：51 種語言互譯，中文輸出自動轉台灣用字繁體（含詞彙轉換，如 software → 軟體）
 - **📦 語言包管理**：預先下載旅遊目的地語言包（各約 30MB），刪除釋放空間
 
+## 截圖 / Screenshots
+
+> 以下為 Android 實機畫面。狀態列的 ✈️ 圖示表示**飛航模式**——辨識、翻譯全部照常運作。
+
+| 收藏夾：拍照翻譯入口 | 文字翻譯（✈️ 飛航模式） |
+|---|---|
+| <img src="screenshots/01-collection.jpg" width="320"> | <img src="screenshots/02-text-translation-offline.jpg" width="320"> |
+
+| 長文翻譯結果（✈️ 飛航模式） | 語言包管理 |
+|---|---|
+| <img src="screenshots/03-translation-result-offline.jpg" width="320"> | <img src="screenshots/04-language-packs.jpg" width="320"> |
+
 ## 架構 / How it works
 
 ```
