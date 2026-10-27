@@ -42,16 +42,35 @@ describe('captureAndTranslate', () => {
     mockSave.mockImplementation((c) => ({ id: 'card1', createdAt: 1, ...c }))
   })
 
-  it('使用者取消拍照 → 回 cancelled，不碰後續流程', async () => {
-    mockGetPhoto.mockRejectedValueOnce(new Error('User cancelled'))
+  it('相機拋非取消錯誤（如權限被拒）→ 回 error 帶原因', async () => {
+    mockGetPhoto.mockRejectedValueOnce(new Error('Permission denied'))
+    const result = await captureAndTranslate(baseOpts)
+    if (result.status !== 'error') {
+      throw new Error(`expected error, got: ${result.status}`)
+    }
+    expect(result.message).toContain('Permission denied')
+  })
+
+  it('相機拋取消 → cancelled', async () => {
+    mockGetPhoto.mockRejectedValueOnce(new Error('User canceled things'))
     const result = await captureAndTranslate(baseOpts)
     expect(result.status).toBe('cancelled')
-    expect(mockSave).not.toHaveBeenCalled()
+  })
+
+  it('getPhoto 回傳無 path → error', async () => {
+    mockGetPhoto.mockResolvedValueOnce({ webPath: 'blob:x' })
+    const result = await captureAndTranslate(baseOpts)
+    if (result.status !== 'error') {
+      throw new Error(`expected error, got: ${result.status}`)
+    }
+    expect(result.message).toContain('無法取得照片檔案路徑')
   })
 
   it('成功流程：拍照→存檔→OCR→翻譯→存卡片（含 webview 顯示路徑）', async () => {
     const result = await captureAndTranslate(baseOpts)
-    expect(result.status).toBe('saved')
+    if (result.status !== 'saved') {
+      throw new Error(`expected saved, got: ${JSON.stringify(result)}`)
+    }
     expect(mockCopy).toHaveBeenCalled()
     expect(mockOcr).toHaveBeenCalledWith('file:///data/photos/p1.jpg', 'LATIN')
     expect(mockTranslate).toHaveBeenCalledWith('CLOSED', 'en', 'zh')
@@ -62,6 +81,23 @@ describe('captureAndTranslate', () => {
         ocrText: 'CLOSED',
         translatedText: '已打烊',
       }),
+    )
+  })
+
+  it('copy 失敗（如 content:// URI）→ 退回原圖 OCR，流程照常完成', async () => {
+    mockCopy.mockRejectedValueOnce(new Error('content URI not supported'))
+    mockGetPhoto.mockResolvedValueOnce({
+      path: 'content://media/external/images/1',
+      webPath: 'blob:webview/x',
+    })
+    const result = await captureAndTranslate(baseOpts)
+    expect(result.status).toBe('saved')
+    expect(mockOcr).toHaveBeenCalledWith(
+      'content://media/external/images/1',
+      'LATIN',
+    )
+    expect(mockSave).toHaveBeenCalledWith(
+      expect.objectContaining({ photoWebPath: 'blob:webview/x' }),
     )
   })
 

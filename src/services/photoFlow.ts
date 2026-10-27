@@ -42,36 +42,43 @@ export async function captureAndTranslate(opts: {
       quality: 80,
       width: 1600, // 縮圖：OCR 夠用且省空間
     })
-  } catch {
-    return { status: 'cancelled' } // 使用者關掉相機/選單
+  } catch (e) {
+    // 只有使用者主動關閉相機/選單才靜默；權限被拒、插件異常要讓使用者看到原因
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.toLowerCase().includes('cancel')) {
+      return { status: 'cancelled' }
+    }
+    return { status: 'error', message: `相機開啟失敗：${msg}` }
   }
 
   if (!photo.path) {
-    return { status: 'error', message: '無法取得照片' }
+    return {
+      status: 'error',
+      message: `無法取得照片檔案路徑（webPath=${photo.webPath ? '有' : '無'}）`,
+    }
   }
 
   // 照片複製進 app 永久目錄（tmp 會被系統清掉）
+  // 注意：相簿選圖在舊版 Android 回傳 content:// URI，copy 可能失敗；
+  // 失敗時不中斷流程，退回用原圖直接 OCR（顯示用 webPath）。
   await ensurePhotosDir()
   const fileName = `photos/${Date.now()}.jpg`
-  let savedUri: string
+  let storedPath = photo.path
   try {
     const copied = await Filesystem.copy({
       from: photo.path,
       to: fileName,
       directory: Directory.Data,
     })
-    savedUri = copied.uri
-  } catch (e) {
-    return {
-      status: 'error',
-      message: e instanceof Error ? e.message : '照片存檔失敗',
-    }
+    storedPath = copied.uri
+  } catch {
+    // copy 失敗仍可繼續：OCR 用原始 path
   }
 
   // OCR（模型綁 APK，離線）
   let ocrText: string
   try {
-    ocrText = await recognizeText(savedUri, scriptForLanguage(opts.sourceLang))
+    ocrText = await recognizeText(storedPath, scriptForLanguage(opts.sourceLang))
   } catch (e) {
     return {
       status: 'error',
@@ -94,8 +101,8 @@ export async function captureAndTranslate(opts: {
   }
 
   const card = saveCard({
-    photoPath: savedUri,
-    photoWebPath: Capacitor.convertFileSrc(savedUri), // WebView <img> 顯示用
+    photoPath: storedPath,
+    photoWebPath: photo.webPath ?? Capacitor.convertFileSrc(storedPath), // WebView <img> 顯示用
     ocrText,
     translatedText: translated,
     sourceLang: opts.sourceLang,
