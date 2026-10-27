@@ -75,7 +75,9 @@ describe('captureAndTranslate', () => {
   it('翻譯失敗（如語言包未下載）→ 回 error，不存卡片，錯誤訊息帶出', async () => {
     mockTranslate.mockRejectedValueOnce(new Error('model not downloaded'))
     const result = await captureAndTranslate(baseOpts)
-    expect(result.status).toBe('error')
+    if (result.status !== 'error') {
+      throw new Error(`expected error, got: ${result.status}`)
+    }
     expect(result.message).toContain('model not downloaded')
     expect(mockSave).not.toHaveBeenCalled()
   })

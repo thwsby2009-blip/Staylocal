@@ -1,49 +1,84 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import './App.css'
 import { translateText } from './services/translationService'
 import { ensureModelsReady } from './services/modelManager'
+import { captureAndTranslate, type CaptureResult } from './services/photoFlow'
+import { listCards, deleteCard, type TravelCard } from './services/cardStore'
 import { LANGUAGES, languageName } from './languages'
 
-type Phase = 'idle' | 'downloading' | 'translating' | 'error'
+type Tab = 'collection' | 'text'
+type Busy = null | 'downloading' | 'translating' | 'processing'
 
 function App() {
+  const [tab, setTab] = useState<Tab>('collection')
+
+  // 收藏夾
+  const [cards, setCards] = useState<TravelCard[]>([])
+  const [notice, setNotice] = useState('')
+  const [busy, setBusy] = useState<Busy>(null)
+
+  // 文字翻譯
   const [source, setSource] = useState('en')
   const [target, setTarget] = useState('zh')
   const [input, setInput] = useState('')
   const [output, setOutput] = useState('')
-  const [phase, setPhase] = useState<Phase>('idle')
-  const [statusMsg, setStatusMsg] = useState('')
-  const [errorMsg, setErrorMsg] = useState('')
+  const [textError, setTextError] = useState('')
+
+  const refreshCards = useCallback(() => setCards(listCards()), [])
+
+  useEffect(() => {
+    refreshCards()
+  }, [refreshCards])
+
+  async function handleCapture() {
+    setNotice('')
+    setBusy('processing')
+    const result: CaptureResult = await captureAndTranslate({
+      sourceLang: source,
+      targetLang: target,
+    })
+    setBusy(null)
+    switch (result.status) {
+      case 'saved':
+        refreshCards()
+        setNotice('已加入收藏夾 ✓')
+        break
+      case 'no-text':
+        setNotice('照片中沒有辨識到文字')
+        break
+      case 'cancelled':
+        break
+      case 'error':
+        setNotice(`失敗：${result.message}`)
+        break
+    }
+  }
+
+  function handleDelete(id: string) {
+    deleteCard(id)
+    refreshCards()
+  }
 
   async function handleTranslate() {
     if (!input.trim()) return
-    setErrorMsg('')
+    setTextError('')
     setOutput('')
-    setPhase('translating')
+    setBusy('translating')
     try {
-      // 先確保語言包存在（缺的會在此下載，各約 30MB）
-      const r = await ensureModelsReady(source, target, {
+      await ensureModelsReady(source, target, {
         onProgress: ({ language }) => {
-          setPhase('downloading')
-          setStatusMsg(`正在下載${languageName(language)}語言包（約 30MB）…`)
+          setBusy('downloading')
+          setNotice(`正在下載${languageName(language)}語言包…`)
         },
       })
-      if (r.status === 'downloaded') {
-        setStatusMsg('語言包已就緒')
-      } else {
-        setStatusMsg('')
-      }
-
-      setPhase('translating')
+      setNotice('')
       const result = await translateText(input, source, target)
       setOutput(result)
-      setPhase('idle')
-      setStatusMsg('')
     } catch (e) {
-      setPhase('error')
-      setErrorMsg(
-        e instanceof Error ? e.message : '翻譯失敗，請確認語言包已下載',
-      )
+      setTextError(e instanceof Error ? e.message : '翻譯失敗')
+    } finally {
+      setBusy(null)
+      setNotice('')
     }
   }
 
@@ -52,72 +87,146 @@ function App() {
     setTarget(source)
   }
 
+  const langSelectors = (label: string) => (
+    <>
+      <select
+        value={source}
+        onChange={(e) => setSource(e.target.value)}
+        aria-label="來源語言"
+      >
+        {LANGUAGES.map((l) => (
+          <option key={l.code} value={l.code}>
+            {l.name}
+          </option>
+        ))}
+      </select>
+      <button className="swap" onClick={swapLanguages} aria-label="交換語言">
+        ⇄
+      </button>
+      <select
+        value={target}
+        onChange={(e) => setTarget(e.target.value)}
+        aria-label={label}
+      >
+        {LANGUAGES.map((l) => (
+          <option key={l.code} value={l.code}>
+            {l.name}
+          </option>
+        ))}
+      </select>
+    </>
+  )
+
   return (
     <div className="app">
-      <header>
-        <h1>離線翻譯</h1>
-        <p className="subtitle">100% 裝置端翻譯 · 不需網路 · 資料不上傳</p>
+      <header className="app-header">
+        <h1>旅遊翻譯本</h1>
+        <p className="tagline">離線拍照翻譯 · 資料不出裝置</p>
       </header>
 
-      <div className="lang-row">
-        <select
-          value={source}
-          onChange={(e) => setSource(e.target.value)}
-          aria-label="來源語言"
+      <nav className="tabs" aria-label="功能頁籤">
+        <button
+          className={tab === 'collection' ? 'tab active' : 'tab'}
+          onClick={() => setTab('collection')}
         >
-          {LANGUAGES.map((l) => (
-            <option key={l.code} value={l.code}>
-              {l.name}
-            </option>
-          ))}
-        </select>
-        <button onClick={swapLanguages} aria-label="交換語言">
-          ⇄
+          收藏夾
         </button>
-        <select
-          value={target}
-          onChange={(e) => setTarget(e.target.value)}
-          aria-label="目標語言"
+        <button
+          className={tab === 'text' ? 'tab active' : 'tab'}
+          onClick={() => setTab('text')}
         >
-          {LANGUAGES.map((l) => (
-            <option key={l.code} value={l.code}>
-              {l.name}
-            </option>
-          ))}
-        </select>
-      </div>
+          文字翻譯
+        </button>
+      </nav>
 
-      <textarea
-        value={input}
-        onChange={(e) => setInput(e.target.value)}
-        placeholder="輸入要翻譯的文字…"
-        rows={5}
-      />
+      {notice && <p className="notice">{notice}</p>}
 
-      <button
-        className="translate-btn"
-        onClick={handleTranslate}
-        disabled={phase === 'translating' || phase === 'downloading'}
-      >
-        {phase === 'downloading'
-          ? '下載語言包中…'
-          : phase === 'translating'
-            ? '翻譯中…'
-            : '翻譯'}
-      </button>
+      {tab === 'collection' ? (
+        <main className="collection">
+          <div className="capture-panel">
+            <div className="lang-row">{langSelectors('目標語言')}</div>
+            <button
+              className="capture-btn"
+              onClick={handleCapture}
+              disabled={busy !== null}
+            >
+              📷 {busy === 'processing' ? '處理中…' : '拍照翻譯'}
+            </button>
+          </div>
 
-      {statusMsg && <p className="status">{statusMsg}</p>}
-      {errorMsg && <p className="error">{errorMsg}</p>}
+          {cards.length === 0 ? (
+            <div className="empty">
+              <p className="empty-icon">🗺️</p>
+              <p>
+                拍下菜單、路標、看板
+                <br />
+                翻譯會收藏在這裡
+              </p>
+            </div>
+          ) : (
+            <ul className="card-list">
+              {cards.map((c) => (
+                <li key={c.id} className="travel-card">
+                  <img
+                    src={c.photoWebPath ?? c.photoPath}
+                    alt="拍攝照片"
+                    className="card-photo"
+                  />
+                  <div className="card-body">
+                    <p className="card-translation">{c.translatedText}</p>
+                    <p className="card-ocr">{c.ocrText}</p>
+                    <p className="card-meta">
+                      {languageName(c.sourceLang)} → {languageName(c.targetLang)}
+                    </p>
+                    <button
+                      className="card-delete"
+                      onClick={() => handleDelete(c.id)}
+                      aria-label="刪除卡片"
+                    >
+                      刪除
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </main>
+      ) : (
+        <main className="text-tab">
+          <div className="lang-row">{langSelectors('目標語言')}</div>
 
-      <div className="result">
-        <h2>翻譯結果</h2>
-        <p className="output">{output || '—'}</p>
-      </div>
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="輸入要翻譯的文字…"
+            rows={5}
+          />
+
+          <button
+            className="translate-btn"
+            onClick={handleTranslate}
+            disabled={busy !== null}
+          >
+            {busy === 'downloading'
+              ? '下載語言包中…'
+              : busy === 'translating'
+                ? '翻譯中…'
+                : '翻譯'}
+          </button>
+
+          {textError && <p className="error">{textError}</p>}
+
+          <div className="result">
+            <h2>翻譯結果</h2>
+            <p className="output">{output || '—'}</p>
+          </div>
+        </main>
+      )}
 
       <footer>
         <p>
-          翻譯完全在你的裝置上執行（ML Kit + OpenCC）。
-          唯一的網路行為是首次使用的語言包下載（Google 伺服器）。
+          翻譯與辨識完全在你的裝置上執行（ML Kit + OpenCC）。
+          唯一的網路行為：首次使用的語言包下載。
         </p>
       </footer>
     </div>
