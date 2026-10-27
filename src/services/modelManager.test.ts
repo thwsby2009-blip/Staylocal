@@ -32,11 +32,11 @@ describe('ensureModelsReady', () => {
     expect(mockDownload).not.toHaveBeenCalled()
   })
 
-  it('缺 zh → 下載 zh 後 ready', async () => {
+  it('缺 zh → 下載 zh 後回 downloaded（表示有新下載），並呼叫 downloadModel', async () => {
     mockGetDownloaded.mockResolvedValueOnce({ languages: ['en'] })
     mockDownload.mockResolvedValueOnce(undefined)
     const result = await ensureModelsReady('en', 'zh')
-    expect(result.status).toBe('ready')
+    expect(result.status).toBe('downloaded')
     expect(mockDownload).toHaveBeenCalledWith({ language: 'zh' })
   })
 
