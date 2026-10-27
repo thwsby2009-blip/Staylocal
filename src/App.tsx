@@ -85,24 +85,32 @@ function App() {
   async function handleCapture() {
     setNotice('')
     setBusy('processing')
-    const result: CaptureResult = await captureAndTranslate({
-      sourceLang: source,
-      targetLang: target,
-    })
-    setBusy(null)
-    switch (result.status) {
-      case 'saved':
-        refreshCards()
-        setNotice('已加入收藏夾 ✓')
-        break
-      case 'no-text':
-        setNotice('照片中沒有辨識到文字')
-        break
-      case 'cancelled':
-        break
-      case 'error':
-        setNotice(`失敗：${result.message}`)
-        break
+    try {
+      const result: CaptureResult = await captureAndTranslate({
+        sourceLang: source,
+        targetLang: target,
+      })
+      switch (result.status) {
+        case 'saved':
+          refreshCards()
+          setNotice('已加入收藏夾 ✓')
+          break
+        case 'no-text':
+          setNotice('照片中沒有辨識到文字')
+          break
+        case 'cancelled':
+          break
+        case 'error':
+          setNotice(`失敗：${result.message}`)
+          break
+      }
+    } catch (e) {
+      // 保險：流程內未預期的例外也要顯示，不可靜默
+      setNotice(
+        `程式錯誤：${e instanceof Error ? e.message : String(e)}`,
+      )
+    } finally {
+      setBusy(null)
     }
   }
 
