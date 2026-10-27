@@ -1,13 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { captureAndTranslate } from './photoFlow'
 
+vi.mock('@capacitor/core', () => ({
+  Capacitor: { convertFileSrc: (p: string) => `web:${p}` },
+}))
 vi.mock('@capacitor/camera', () => ({
   Camera: { getPhoto: vi.fn() },
   CameraResultType: { Uri: 'uri' },
   CameraSource: { Prompt: 'PROMPT' },
 }))
 vi.mock('@capacitor/filesystem', () => ({
-  Filesystem: { copy: vi.fn() },
+  Filesystem: { copy: vi.fn(), mkdir: vi.fn() },
   Directory: { Data: 'DATA' },
 }))
 vi.mock('./ocrService', () => ({ recognizeText: vi.fn(), scriptForLanguage: vi.fn(() => 'LATIN') }))
@@ -22,6 +25,7 @@ import { saveCard } from './cardStore'
 
 const mockGetPhoto = Camera.getPhoto as ReturnType<typeof vi.fn>
 const mockCopy = Filesystem.copy as ReturnType<typeof vi.fn>
+const mockMkdir = Filesystem.mkdir as ReturnType<typeof vi.fn>
 const mockOcr = recognizeText as ReturnType<typeof vi.fn>
 const mockTranslate = translateText as ReturnType<typeof vi.fn>
 const mockSave = saveCard as ReturnType<typeof vi.fn>
@@ -45,7 +49,7 @@ describe('captureAndTranslate', () => {
     expect(mockSave).not.toHaveBeenCalled()
   })
 
-  it('成功流程：拍照→存檔→OCR→翻譯→存卡片', async () => {
+  it('成功流程：拍照→存檔→OCR→翻譯→存卡片（含 webview 顯示路徑）', async () => {
     const result = await captureAndTranslate(baseOpts)
     expect(result.status).toBe('saved')
     expect(mockCopy).toHaveBeenCalled()
@@ -54,6 +58,7 @@ describe('captureAndTranslate', () => {
     expect(mockSave).toHaveBeenCalledWith(
       expect.objectContaining({
         photoPath: 'file:///data/photos/p1.jpg',
+        photoWebPath: 'web:file:///data/photos/p1.jpg',
         ocrText: 'CLOSED',
         translatedText: '已打烊',
       }),
@@ -84,5 +89,11 @@ describe('captureAndTranslate', () => {
         width: 1600,
       }),
     )
+  })
+
+  it('photos 目錄不存在（mkdir 拋 exists 錯誤）→ 流程照常繼續', async () => {
+    mockMkdir.mockRejectedValueOnce(new Error('directory exists'))
+    const result = await captureAndTranslate(baseOpts)
+    expect(result.status).toBe('saved')
   })
 })

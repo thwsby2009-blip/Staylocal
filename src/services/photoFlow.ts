@@ -1,3 +1,4 @@
+import { Capacitor } from '@capacitor/core'
 import { Camera, CameraResultType, CameraSource } from '@capacitor/camera'
 import { Filesystem, Directory } from '@capacitor/filesystem'
 import { recognizeText, scriptForLanguage } from './ocrService'
@@ -15,6 +16,19 @@ export type CaptureResult =
   | { status: 'saved'; card: TravelCard }
   | { status: 'no-text' }
   | { status: 'error'; message: string }
+
+/** photos/ 目錄存在性（已存在時忽略錯誤） */
+async function ensurePhotosDir(): Promise<void> {
+  try {
+    await Filesystem.mkdir({
+      path: 'photos',
+      directory: Directory.Data,
+      recursive: true,
+    })
+  } catch {
+    // 已存在或其他非致命錯誤 — copy 時會再驗證
+  }
+}
 
 export async function captureAndTranslate(opts: {
   sourceLang: string
@@ -37,6 +51,7 @@ export async function captureAndTranslate(opts: {
   }
 
   // 照片複製進 app 永久目錄（tmp 會被系統清掉）
+  await ensurePhotosDir()
   const fileName = `photos/${Date.now()}.jpg`
   let savedUri: string
   try {
@@ -80,6 +95,7 @@ export async function captureAndTranslate(opts: {
 
   const card = saveCard({
     photoPath: savedUri,
+    photoWebPath: Capacitor.convertFileSrc(savedUri), // WebView <img> 顯示用
     ocrText,
     translatedText: translated,
     sourceLang: opts.sourceLang,

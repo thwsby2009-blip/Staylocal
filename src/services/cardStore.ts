@@ -7,6 +7,8 @@
 export interface TravelCard {
   id: string
   photoPath: string
+  /** WebView <img> 顯示用（convertFileSrc 轉換後的路徑） */
+  photoWebPath?: string
   ocrText: string
   translatedText: string
   sourceLang: string
