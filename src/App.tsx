@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
 import { translateText } from './services/translationService'
 import {
@@ -10,6 +10,11 @@ import {
 import { captureAndTranslate, type CaptureResult } from './services/photoFlow'
 import { listCards, deleteCard, type TravelCard } from './services/cardStore'
 import { LANGUAGES, languageName } from './languages'
+import {
+  startDictation,
+  stopDictation,
+  isSpeechSupported,
+} from './services/speechService'
 
 type Tab = 'collection' | 'text' | 'packs'
 type Busy = null | 'downloading' | 'translating' | 'processing'
@@ -28,6 +33,10 @@ function App() {
   const [input, setInput] = useState('')
   const [output, setOutput] = useState('')
   const [textError, setTextError] = useState('')
+
+  // 語音聽寫：錄音中狀態 + 本次錄音開始時的輸入框內容（partial 顯示用基底）
+  const [dictating, setDictating] = useState(false)
+  const speechBaseRef = useRef('')
 
   // 語言包管理
   const [downloadedLangs, setDownloadedLangs] = useState<string[]>([])
@@ -117,6 +126,49 @@ function App() {
   function handleDelete(id: string) {
     deleteCard(id)
     refreshCards()
+  }
+
+  // ===== 語音聽寫（離線）=====
+
+  async function handleDictate() {
+    if (dictating) {
+      await stopDictation()
+      return
+    }
+    if (busy !== null) return
+    if (!isSpeechSupported(source)) {
+      setTextError(`「${languageName(source)}」暫不支援語音輸入，請用打字或改選英文`)
+      return
+    }
+    setTextError('')
+    speechBaseRef.current = input // 基底 = 錄音開始時的內容（保留手動編輯與前次聽寫結果）
+    try {
+      await startDictation({
+        language: source,
+        onPartial: (text) => {
+          // 即時顯示：基底 + 當前辨識中的文字
+          setInput([speechBaseRef.current, text].filter(Boolean).join('\n'))
+        },
+        onFinal: (result) => {
+          setDictating(false)
+          if (result.transcript) {
+            setInput(
+              [speechBaseRef.current, result.transcript]
+                .filter(Boolean)
+                .join('\n'),
+            )
+          } else {
+            setInput(speechBaseRef.current) // 空結果（無語音/錯誤）還原基底
+          }
+          if (result.reason === 'error' || result.reason === 'no-match') {
+            setTextError(result.message ?? '語音辨識失敗')
+          }
+        },
+      })
+      setDictating(true)
+    } catch (e) {
+      setTextError(e instanceof Error ? e.message : '語音辨識啟動失敗')
+    }
   }
 
   async function handleTranslate() {
@@ -265,21 +317,33 @@ function App() {
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="輸入要翻譯的文字…"
+            placeholder={
+              dictating ? '聽寫中，請開口說話…' : '輸入要翻譯的文字…'
+            }
             rows={5}
           />
 
-          <button
-            className="translate-btn"
-            onClick={handleTranslate}
-            disabled={busy !== null}
-          >
-            {busy === 'downloading'
-              ? '下載語言包中…'
-              : busy === 'translating'
-                ? '翻譯中…'
-                : '翻譯'}
-          </button>
+          <div className="input-actions">
+            <button
+              className={dictating ? 'dictate-btn recording' : 'dictate-btn'}
+              onClick={handleDictate}
+              disabled={busy !== null}
+              aria-label={dictating ? '停止錄音' : '開始錄音'}
+            >
+              {dictating ? '⏹ 停止錄音' : '🎤 語音輸入'}
+            </button>
+            <button
+              className="translate-btn"
+              onClick={handleTranslate}
+              disabled={busy !== null || dictating}
+            >
+              {busy === 'downloading'
+                ? '下載語言包中…'
+                : busy === 'translating'
+                  ? '翻譯中…'
+                  : '翻譯'}
+            </button>
+          </div>
 
           {textError && <p className="error">{textError}</p>}
 

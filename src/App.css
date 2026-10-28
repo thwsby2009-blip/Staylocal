@@ -272,6 +272,49 @@ textarea {
   opacity: 0.6;
 }
 
+/* 語音輸入 */
+.input-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.input-actions .translate-btn {
+  flex: 1;
+}
+
+.dictate-btn {
+  flex: 0 0 auto;
+  padding: 14px 18px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--accent-dark);
+  background: var(--card);
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.dictate-btn.recording {
+  color: #fff;
+  background: #d9534f;
+  border-color: #d9534f;
+  animation: dictate-pulse 1.2s ease-in-out infinite;
+}
+
+.dictate-btn:disabled {
+  opacity: 0.6;
+}
+
+@keyframes dictate-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(217, 83, 79, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(217, 83, 79, 0);
+  }
+}
+
 .result {
   background: var(--card);
   border: 1px solid var(--border);
