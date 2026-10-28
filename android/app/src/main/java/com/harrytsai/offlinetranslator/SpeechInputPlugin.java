@@ -108,40 +108,62 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
             call.reject("Activity 不可用");
             return;
         }
-        if (recognizer == null) {
-            recognizer = SpeechRecognizer.createSpeechRecognizer(activity);
-            recognizer.setRecognitionListener(this);
+        // SpeechRecognizer 規定只能在主執行緒使用——
+        // Capacitor 插件方法跑在 CapacitorPlugins 背景執行緒，必須投遞到 main thread
+        final PluginCall pending = call;
+        final Activity act = activity;
+        act.runOnUiThread(() -> runOnMainThread(pending, act));
+    }
+
+    private void runOnMainThread(PluginCall call, Activity activity) {
+        try {
+            if (recognizer == null) {
+                recognizer = SpeechRecognizer.createSpeechRecognizer(activity);
+                recognizer.setRecognitionListener(this);
+            }
+
+            // 不在此處用 isRecognitionAvailable 擋（OEM 判定不一）——
+            // 直接嘗試，服務真的不存在時 onError 會回報
+
+            String language = call.getString("language", "en-US");
+
+            manuallyStopped = false;
+            finished = false;
+            listening = true;
+
+            Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, language);
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, language);
+            // 零上傳的關鍵：只用離線引擎（API 23+，裝置需已下載裝置端語音辨識資料）
+            intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true);
+            intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+
+            recognizer.startListening(intent);
+            JSObject ret = new JSObject();
+            ret.put("started", true);
+            call.resolve(ret);
+        } catch (Exception e) {
+            listening = false;
+            call.reject("語音辨識啟動失敗：" + e.getMessage());
         }
-
-        // 不在此處用 isRecognitionAvailable 擋（OEM 判定不一）——
-        // 直接嘗試，服務真的不存在時 onError 會回報
-
-        String language = call.getString("language", "en-US");
-
-        manuallyStopped = false;
-        finished = false;
-        listening = true;
-
-        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, language);
-        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, language);
-        // 零上傳的關鍵：只用離線引擎（API 23+，裝置需已下載裝置端語音辨識資料）
-        intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true);
-        intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
-
-        recognizer.startListening(intent);
-        JSObject ret = new JSObject();
-        ret.put("started", true);
-        call.resolve(ret);
     }
 
     @PluginMethod
     public void stop(PluginCall call) {
         manuallyStopped = true;
-        if (recognizer != null && listening) {
-            recognizer.stopListening();
+        Activity activity = getActivity();
+        if (activity != null && recognizer != null && listening) {
+            // recognizer 只能在主執行緒操作（同 start）
+            activity.runOnUiThread(() -> {
+                if (recognizer != null) {
+                    try {
+                        recognizer.stopListening();
+                    } catch (Exception ignored) {
+                    }
+                }
+            });
         }
         call.resolve();
     }
