@@ -48,31 +48,35 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
     public void checkAvailability(PluginCall call) {
         Activity activity = getActivity();
         JSObject ret = new JSObject();
-        if (activity == null) {
-            ret.put("available", false);
-            ret.put("speechActivities", new ArrayList<String>());
-            ret.put("recognitionServices", new ArrayList<String>());
-            ret.put("defaultService", "");
-            call.resolve(ret);
-            return;
-        }
-        boolean available = SpeechRecognizer.isRecognitionAvailable(activity);
-        // 診斷資料：系統實際看得到的辨識元件（套件可見性/缺服務都靠這個定位）
         ArrayList<String> acts = new ArrayList<>();
-        for (ResolveInfo ri : activity.getPackageManager()
-                .queryIntentActivities(new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH), 0)) {
-            acts.add(ri.activityInfo.packageName);
-        }
         ArrayList<String> svcs = new ArrayList<>();
-        for (ResolveInfo ri : activity.getPackageManager()
-                .queryIntentServices(new Intent("android.speech.RecognitionService"), 0)) {
-            svcs.add(ri.activityInfo.packageName + "/" + ri.serviceInfo.name);
+        String def = "";
+        if (activity != null) {
+            // 診斷是輔助資訊：任何失敗都降級為空清單，絕不可讓 App 崩潰
+            try {
+                ret.put("available", SpeechRecognizer.isRecognitionAvailable(activity));
+                for (ResolveInfo ri : activity.getPackageManager()
+                        .queryIntentActivities(new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH), 0)) {
+                    if (ri != null && ri.activityInfo != null) {
+                        acts.add(ri.activityInfo.packageName);
+                    }
+                }
+                for (ResolveInfo ri : activity.getPackageManager()
+                        .queryIntentServices(new Intent("android.speech.RecognitionService"), 0)) {
+                    // 查服務時 ResolveInfo 填 serviceInfo，activityInfo 是 null——必須走 serviceInfo
+                    if (ri != null && ri.serviceInfo != null) {
+                        svcs.add(ri.serviceInfo.packageName + "/" + ri.serviceInfo.name);
+                    }
+                }
+                String d = Settings.Secure.getString(activity.getContentResolver(), "voice_recognition_service");
+                if (d != null) def = d;
+            } catch (Exception ignored) {
+                // 保留已收集資料，照常回傳
+            }
         }
-        String def = Settings.Secure.getString(activity.getContentResolver(), "voice_recognition_service");
-        ret.put("available", available);
         ret.put("speechActivities", acts);
         ret.put("recognitionServices", svcs);
-        ret.put("defaultService", def == null ? "" : def);
+        ret.put("defaultService", def);
         call.resolve(ret);
     }
 
