@@ -3,6 +3,7 @@ package com.harrytsai.offlinetranslator;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.ResolveInfo;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.speech.RecognitionListener;
@@ -43,6 +44,7 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
     private boolean listening = false;
     private boolean finished = true;
     private boolean manuallyStopped = false;
+    private boolean onDeviceMode = false;
 
     @PluginMethod
     public void checkAvailability(PluginCall call) {
@@ -118,7 +120,15 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
     private void runOnMainThread(PluginCall call, Activity activity) {
         try {
             if (recognizer == null) {
-                recognizer = SpeechRecognizer.createSpeechRecognizer(activity);
+                // 優先用 API 31+ 的專用端側辨識器：天生離線、不走語言支援檢查
+                //（標準辨識器 + EXTRA_PREFER_OFFLINE 在 Android 13+ 會回錯誤 13 CANNOT_CHECK_SUPPORT）
+                onDeviceMode = Build.VERSION.SDK_INT >= 31
+                        && SpeechRecognizer.isOnDeviceRecognitionAvailable(activity);
+                if (onDeviceMode) {
+                    recognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(activity);
+                } else {
+                    recognizer = SpeechRecognizer.createSpeechRecognizer(activity);
+                }
                 recognizer.setRecognitionListener(this);
             }
 
@@ -136,8 +146,10 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
                     RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
             intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, language);
             intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, language);
-            // 零上傳的關鍵：只用離線引擎（API 23+，裝置需已下載裝置端語音辨識資料）
-            intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true);
+            if (!onDeviceMode) {
+                // 傳統辨識器才需要聲明離線；端側辨識器天生離線
+                intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true);
+            }
             intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
 
             recognizer.startListening(intent);
@@ -249,6 +261,10 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
             case SpeechRecognizer.ERROR_NETWORK_TIMEOUT:
                 reason = "error";
                 message = "離線辨識失敗：裝置可能尚未下載「裝置端語音辨識」資料（需在 WiFi 環境下載）";
+                break;
+            case 13: // ERROR_CANNOT_CHECK_SUPPORT（API 34+ 常數，舊 SDK 編譯用數字）
+                reason = "error";
+                message = "語音服務無法確認離線語言支援（代碼 13）：此裝置可能沒有「裝置端語音辨識」資料，請在 WiFi 下到 系統設定 → Google → 裝置端語音辨識 下載";
                 break;
             case SpeechRecognizer.ERROR_RECOGNIZER_BUSY:
                 reason = "error";
