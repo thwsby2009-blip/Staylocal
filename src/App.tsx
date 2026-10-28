@@ -14,6 +14,7 @@ import {
   startDictation,
   stopDictation,
   isSpeechSupported,
+  getSpeechDiagnostics,
 } from './services/speechService'
 
 type Tab = 'collection' | 'text' | 'packs'
@@ -167,7 +168,16 @@ function App() {
       })
       setDictating(true)
     } catch (e) {
-      setTextError(e instanceof Error ? e.message : '語音辨識啟動失敗')
+      const base = e instanceof Error ? e.message : '語音辨識啟動失敗'
+      // 帶診斷資料：系統實際看得到的辨識元件，用來定位「服務不存在 vs 看不見」
+      const diag = await getSpeechDiagnostics()
+      if (diag) {
+        setTextError(
+          `${base}\n[診斷] available=${diag.available}\n辨識活動=${JSON.stringify(diag.speechActivities)}\n辨識服務=${JSON.stringify(diag.recognitionServices)}\n預設服務=${diag.defaultService || '（無）'}`,
+        )
+      } else {
+        setTextError(base)
+      }
     }
   }
 

@@ -2,7 +2,9 @@ package com.harrytsai.offlinetranslator;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.content.pm.ResolveInfo;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
@@ -45,9 +47,32 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
     @PluginMethod
     public void checkAvailability(PluginCall call) {
         Activity activity = getActivity();
-        boolean available = activity != null && SpeechRecognizer.isRecognitionAvailable(activity);
         JSObject ret = new JSObject();
+        if (activity == null) {
+            ret.put("available", false);
+            ret.put("speechActivities", new ArrayList<String>());
+            ret.put("recognitionServices", new ArrayList<String>());
+            ret.put("defaultService", "");
+            call.resolve(ret);
+            return;
+        }
+        boolean available = SpeechRecognizer.isRecognitionAvailable(activity);
+        // 診斷資料：系統實際看得到的辨識元件（套件可見性/缺服務都靠這個定位）
+        ArrayList<String> acts = new ArrayList<>();
+        for (ResolveInfo ri : activity.getPackageManager()
+                .queryIntentActivities(new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH), 0)) {
+            acts.add(ri.activityInfo.packageName);
+        }
+        ArrayList<String> svcs = new ArrayList<>();
+        for (ResolveInfo ri : activity.getPackageManager()
+                .queryIntentServices(new Intent("android.speech.RecognitionService"), 0)) {
+            svcs.add(ri.activityInfo.packageName + "/" + ri.serviceInfo.name);
+        }
+        String def = Settings.Secure.getString(activity.getContentResolver(), "voice_recognition_service");
         ret.put("available", available);
+        ret.put("speechActivities", acts);
+        ret.put("recognitionServices", svcs);
+        ret.put("defaultService", def == null ? "" : def);
         call.resolve(ret);
     }
 
@@ -79,17 +104,15 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
             call.reject("Activity 不可用");
             return;
         }
-        if (!SpeechRecognizer.isRecognitionAvailable(activity)) {
-            call.reject("此裝置沒有可用的語音辨識服務");
-            return;
-        }
-
-        String language = call.getString("language", "en-US");
-
         if (recognizer == null) {
             recognizer = SpeechRecognizer.createSpeechRecognizer(activity);
             recognizer.setRecognitionListener(this);
         }
+
+        // 不在此處用 isRecognitionAvailable 擋（OEM 判定不一）——
+        // 直接嘗試，服務真的不存在時 onError 會回報
+
+        String language = call.getString("language", "en-US");
 
         manuallyStopped = false;
         finished = false;

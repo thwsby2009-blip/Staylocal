@@ -12,7 +12,12 @@ import { registerPlugin, type PluginListenerHandle } from '@capacitor/core'
  */
 
 export interface SpeechInputPlugin {
-  checkAvailability(): Promise<{ available: boolean }>
+  checkAvailability(): Promise<{
+    available: boolean
+    speechActivities: string[]
+    recognitionServices: string[]
+    defaultService: string
+  }>
   start(options: { language: string }): Promise<{ started: boolean }>
   stop(): Promise<void>
   addListener(
@@ -83,6 +88,20 @@ export async function checkSpeechAvailability(): Promise<boolean> {
     availabilityCache = false
   }
   return availabilityCache
+}
+
+/** 診斷用：取回系統語音辨識元件清單（activity/服務/預設服務） */
+export async function getSpeechDiagnostics(): Promise<{
+  available: boolean
+  speechActivities: string[]
+  recognitionServices: string[]
+  defaultService: string
+} | null> {
+  try {
+    return await SpeechInput.checkAvailability()
+  } catch {
+    return null
+  }
 }
 
 /** 測試用：重置可用性快取與監聽狀態 */
