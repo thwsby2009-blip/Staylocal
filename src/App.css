@@ -315,6 +315,12 @@ textarea {
   }
 }
 
+.build-tag {
+  font-size: 11px;
+  color: var(--text-2);
+  margin-top: 6px;
+}
+
 .result {
   background: var(--card);
   border: 1px solid var(--border);
