@@ -566,7 +566,10 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
         OfflineRecognizerConfig cfg = new OfflineRecognizerConfig();
         cfg.setFeatConfig(feat);
         cfg.setModelConfig(mc);
-        svRecognizer = new OfflineRecognizer(getContext().getAssets(), cfg);
+        // assetManager 必須傳 null：模型是檔案系統上的絕對路徑（使用者裝置端下載的），
+        // 傳 Assets 會讓 sherpa-onnx 走 AssetManager 讀檔失敗並 LOG(FATAL) 直接中斷行程
+        // （native abort，Java 攔不到，症狀＝按停止錄音就閃退、crash buffer 卻是空的）。
+        svRecognizer = new OfflineRecognizer(null, cfg);
         svRecognizerKey = key;
     }
 
