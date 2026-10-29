@@ -33,9 +33,13 @@ function App() {
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState<Busy>(null)
 
-  // 文字翻譯
-  const [source, setSource] = useState('en')
-  const [target, setTarget] = useState('zh')
+  // 文字翻譯（語言選擇記在裝置上，App 重啟不重置）
+  const [source, setSource] = useState(
+    () => localStorage.getItem('ot_source') ?? 'en',
+  )
+  const [target, setTarget] = useState(
+    () => localStorage.getItem('ot_target') ?? 'zh',
+  )
   const [input, setInput] = useState('')
   const [output, setOutput] = useState('')
   const [textError, setTextError] = useState('')
@@ -52,6 +56,14 @@ function App() {
     const id = setInterval(() => setRecordSeconds((s) => s + 1), 1000)
     return () => clearInterval(id)
   }, [recording])
+
+  // 記住語言選擇（重啟後不重置）
+  useEffect(() => {
+    localStorage.setItem('ot_source', source)
+  }, [source])
+  useEffect(() => {
+    localStorage.setItem('ot_target', target)
+  }, [target])
 
   // 語言包管理
   const [downloadedLangs, setDownloadedLangs] = useState<string[]>([])
@@ -192,8 +204,10 @@ function App() {
         const base = e instanceof Error ? e.message : '轉逐字稿失敗'
         setInput(speechBaseRef.current)
         if (base.includes('沒有聽到可辨識的語音')) {
-          // 靜音／太小聲：單純提示，不噴診斷資訊
-          setNotice(base)
+          // 有錄到音但辨識不到：最常見是來源語言選錯
+          setNotice(
+            `沒有辨識到語音內容 —— 請確認「來源語言」是否選對（目前：${languageName(source)}），或靠近麥克風再講一次`,
+          )
         } else {
           setTextError(await speechFailureText(base, source))
         }
@@ -500,7 +514,7 @@ function App() {
           翻譯與辨識完全在你的裝置上執行（ML Kit + OpenCC）。
           唯一的網路行為：首次使用的語言包下載。
         </p>
-        <p className="build-tag">build v17 · 聽寫診斷版（2026-10-29）</p>
+        <p className="build-tag">build v18 · 聽寫診斷版（2026-10-29）</p>
       </footer>
     </div>
   )
