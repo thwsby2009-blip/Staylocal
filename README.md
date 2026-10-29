@@ -11,8 +11,10 @@ A fully offline mobile translation app. Photo or text — everything runs on you
 - **📷 拍照翻譯**：拍下菜單、路標、看板 → 端側 OCR 辨識文字 → 自動翻譯 → 存成旅遊卡片收藏
 - **🗺️ 收藏夾**：照片與譯文一起保存，之後可翻看、刪除
 - **⌨️ 文字翻譯**：51 種語言互譯，中文輸出自動轉台灣用字繁體（含詞彙轉換，如 software → 軟體）
-- **📦 語言包管理**：預先下載旅遊目的地語言包（各約 30MB），刪除釋放空間
-- **🎤 語音轉逐字稿**：錄音後端側轉文字（全離線），逐字稿可直接續接翻譯；中文／日／韓／英／粵另可選配**高準度模型**（SenseVoice，約 240MB，首次使用時下載，自動加標點）
+- **📦 語言包管理**：預先下載旅遊目的地語言包（實測**每個約 50 MB**），刪除釋放空間
+- **🎤 語音轉逐字稿**：錄音後端側轉文字（全離線），逐字稿可直接續接翻譯；中文／日／韓／英／粵另可選配**高準度模型**（SenseVoice，**228 MiB**，首次使用時下載，自動加標點；不下載也能用系統語音引擎）
+
+> 💾 安裝空間總表見下方[安裝空間](#安裝空間--storage-footprint)：只裝 App 約 70-90 MB，全配（語音模型＋數個語言包）約 460 MB。
 
 ## 截圖 / Screenshots
 
@@ -29,23 +31,60 @@ A fully offline mobile translation app. Photo or text — everything runs on you
 ## 架構 / How it works
 
 ```
-拍照/選圖 ──→ ML Kit Text Recognition v2（端側 OCR，模型綁 APK）
-                │
-輸入文字 ───────┤
-                │
-錄音（16kHz WAV）→ 端側語音辨識 ┤（系統 On-Device 引擎；已裝 SenseVoice 時改用 sherpa-onnx）
-                ▼
+輸入來源
+  ├─ 📷 拍照／選圖 ──→ ML Kit Text Recognition v2（端側 OCR，模型綁在 APK）
+  ├─ ⌨️ 打字／貼上
+  └─ 🎤 錄音（16kHz WAV，AudioRecord 原始未處理收音）
+                        │
+                        ▼
+            端側語音辨識（二選一，自動）
+              ├─ 系統 On-Device 引擎（Google，預設）
+              └─ sherpa-onnx + SenseVoice（選配高準度模型，含標點）
+                        │
+                        ▼
         ML Kit Translation（端側翻譯，Google Translate 離線同款模型）
-                │
-                ▼
+                        │
+                        ▼
         OpenCC cn→twp（簡體 → 台灣用字繁體，含詞彙轉換）
 ```
 
 - 所有辨識與翻譯**完全在裝置上執行**，飛航模式可用
-- 語音走批次架構：`AudioRecord`（**原始未處理收音**，避免 Google 專屬降噪鏈讓其他模型聽不懂）錄成 WAV，停止後才把音檔餵給辨識器
-- 選配的 SenseVoice 由 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 在裝置端推論；模型檔在使用者裝置上首次下載，**不隨 APK 散布**
-- 唯一的網路行為：首次使用時從 Google 伺服器下載翻譯語言包（OCR 模型直接綁在 APK 內，免下載）
-- 照片存在 app 私有目錄，卡片 metadata 存 localStorage，不出裝置
+- 語音走**批次架構**：先錄成 WAV，停止後才把音檔餵給辨識器（連續串流在舊機不可靠）；長錄音自動切段（系統引擎 12 秒、SenseVoice 25 秒）逐段轉寫再接起來
+- 收音刻意使用 **`UNPROCESSED` 原始音源**：`VOICE_RECOGNITION` 會被套上 Google 專屬降噪鏈，那條處理過的聲音只有 Google 自家引擎聽得懂，第三方離線模型（SenseVoice／Paraformer）會聽成雜訊
+- 高準度模型推論失敗或未安裝時，**自動退回系統端側引擎**（不會讓使用者卡住）
+- 唯一的網路行為：首次使用時下載翻譯語言包與（選配的）語音模型；OCR 模型隨 APK 內附，免下載
+- 照片存在 app 私有目錄，卡片 metadata 存 localStorage，音訊與文字都不出裝置
+
+## 安裝空間 / Storage footprint
+
+> 實測日期 2026-10-29；APK 為 release 建置（arm64-v8a），裝置為 Sony Xperia 5 IV（Android 14）。
+
+| 項目 | 大小 | 何時佔用 | 可刪除 |
+|---|---|---|---|
+| **APK**（release） | **68 MB** | 安裝時 | — |
+| ├ 原生庫 `.so` | 56 MB | 同上 | — |
+| │　├ ML Kit 翻譯 `libtranslate_jni.so` | 15.6 MB | | — |
+| │　├ onnxruntime `libonnxruntime.so` | 21.2 MB | 端側 ASR 推論用 | — |
+| │　├ sherpa-onnx（jni + c-api + cxx-api） | 8.5 MB | 端側 ASR 推論用 | — |
+| │　└ ML Kit OCR `libmlkit_google_ocr_pipeline.so` | 10.6 MB | | — |
+| ├ dex 程式碼 | 15 MB | | — |
+| └ 網頁資產＋資源（含 OpenCC 詞庫） | 8 MB | | — |
+| 系統最佳化產物（dexopt / odex） | 約 10-20 MB | 安裝後由 Android 生成 | — |
+| **高準度離線語音模型**（SenseVoice int8，選配） | **228 MiB** | 首次使用時下載 | ✅ App 內可刪除 |
+| **翻譯語言包**（每個語言） | **約 50 MB** | 首次使用該語言時下載 | ✅ App 內可刪除 |
+| OCR 模型 | 已含在 APK（10.6 MB） | — | — |
+
+實機總佔用範例：
+
+| 情境 | 佔用 |
+|---|---|
+| 只裝 App、不下載任何模型 | 約 **70-90 MB** |
+| ＋ 高準度語音模型（中文） | 約 **300 MB** |
+| ＋ 語音模型 ＋ 3 個翻譯語言包（en_ja / en_ko / en_zh） | 約 **460 MB**（實測：APK 70 MB ＋ 模型 229 MB ＋ 語言包 154 MB） |
+
+兩點補充：
+- **不下載高準度語音模型也能用語音**（退回系統端側引擎，零額外下載）——把 228 MiB 留給需要的使用者
+- APK 內約 30 MB 是 sherpa-onnx + onnxruntime；若日後以體積優先，可改成 Play Feature Delivery 動態模組或另出「輕量版」口味
 
 ## 技術棧 / Tech Stack
 
@@ -54,7 +93,7 @@ A fully offline mobile translation app. Photo or text — everything runs on you
 - [@capacitor-mlkit/text-recognition](https://github.com/capawesome-team/capacitor-mlkit)（ML Kit Text Recognition v2）
 - [opencc-js](https://github.com/nk2028/opencc-js)（s2twp：簡體→台灣繁體＋詞彙轉換）
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)（離線語音辨識推論，Apache-2.0；AAR 不進版控，需先跑 `bash scripts/fetch-deps.sh`）
-- Vitest（55 個單元測試）
+- Vitest（56 個單元測試）
 
 ## 已知限制 / Known Limitations
 
