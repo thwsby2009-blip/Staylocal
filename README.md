@@ -32,13 +32,13 @@ A fully offline mobile translation app. Photo or text — everything runs on you
 
 ```
 輸入來源
-  ├─ 📷 拍照／選圖 ──→ ML Kit Text Recognition v2（端側 OCR，模型綁在 APK）
+  ├─ 📷 拍照／選圖 ──→ ML Kit Text Recognition v2（端側 OCR）
   ├─ ⌨️ 打字／貼上
   └─ 🎤 錄音（16kHz WAV，AudioRecord 原始未處理收音）
                         │
                         ▼
             端側語音辨識（二選一，自動）
-              ├─ 系統 On-Device 引擎（Google，預設）
+              ├─ 系統 On-Device 引擎（Google，預設；零下載）
               └─ sherpa-onnx + SenseVoice（選配高準度模型，含標點）
                         │
                         ▼
@@ -46,6 +46,11 @@ A fully offline mobile translation app. Photo or text — everything runs on you
                         │
                         ▼
         OpenCC cn→twp（簡體 → 台灣用字繁體，含詞彙轉換）
+
+磁碟佔用：⤓ = 首次使用時下載
+  APK 內附（68 MB 內）：OCR 模型 10.6 MB ｜ ASR 推論引擎（sherpa-onnx + onnxruntime）29.7 MB ｜ 翻譯引擎 15.6 MB
+  ⤓ 選配高準度語音模型　228 MiB（≈ 239 MB）　可刪除
+  ⤓ 翻譯語言包　　　　　每語言約 50 MB　　　　可刪除
 ```
 
 - 所有辨識與翻譯**完全在裝置上執行**，飛航模式可用
@@ -70,7 +75,7 @@ A fully offline mobile translation app. Photo or text — everything runs on you
 | ├ dex 程式碼 | 15 MB | | — |
 | └ 網頁資產＋資源（含 OpenCC 詞庫） | 8 MB | | — |
 | 系統最佳化產物（dexopt / odex） | 約 10-20 MB | 安裝後由 Android 生成 | — |
-| **高準度離線語音模型**（SenseVoice int8，選配） | **228 MiB** | 首次使用時下載 | ✅ App 內可刪除 |
+| **高準度離線語音模型**（SenseVoice int8，選配） | **228 MiB（≈ 239 MB）** | 首次使用時下載 | ✅ App 內可刪除 |
 | **翻譯語言包**（每個語言） | **約 50 MB** | 首次使用該語言時下載 | ✅ App 內可刪除 |
 | OCR 模型 | 已含在 APK（10.6 MB） | — | — |
 
