@@ -1,14 +1,15 @@
 import { registerPlugin, type PluginListenerHandle } from '@capacitor/core'
 
 /**
- * 語音聽寫服務：橋接自製 SpeechInputPlugin（Android 內建 SpeechRecognizer）。
+ * 語音聽寫服務：橋接自製 SpeechInputPlugin。
  *
- * 定位：完全離線——原生層以 EXTRA_PREFER_OFFLINE=true 只用離線辨識引擎，
- * 零上傳，與本 app 的翻譯/OCR 同一原則。
+ * 架構（批次，2026-10-29 定案）：**先錄音成檔案 → 停止後再轉逐字稿**。
+ * 不以即時串流辨識（端側引擎在舊機上分段重啟不可靠）。
  *
- * 事件模型（原生 → JS）：
- * - partialTranscript：辨識中的即時文字（當前段）
- * - finalTranscript：一段結束（手動停止／引擎自行結束／無語音／錯誤）
+ * 定位：完全離線——錄音走 AudioRecord，轉寫把 WAV 檔餵給端側辨識器
+ * （API 33+ 的 EXTRA_AUDIO_SOURCE），音訊不離開裝置。
+ *
+ * 事件：transcribeFile 進行中會持續送 partialTranscript（逐字稿即時長出來）。
  */
 
 export interface SpeechSupportInfo {
@@ -32,37 +33,29 @@ export interface SpeechInputPlugin {
     triggered: boolean
     message: string
   }>
-  start(options: { language: string }): Promise<{ started: boolean }>
-  stop(): Promise<void>
+  /** 開始錄音（16kHz WAV，存 app 快取） */
+  startRecording(options: Record<string, never>): Promise<{
+    started: boolean
+    path: string
+  }>
+  /** 停止錄音：回傳音檔路徑與長度 */
+  stopRecording(): Promise<{ path: string; bytes: number; seconds: number }>
+  /** 把音檔交給端側辨識器轉逐字稿（離線） */
+  transcribeFile(options: { path: string; language: string }): Promise<{
+    text: string
+  }>
   addListener(
     eventName: 'partialTranscript',
     listenerFunc: (data: { text: string }) => void,
   ): Promise<PluginListenerHandle> & PluginListenerHandle
-  addListener(
-    eventName: 'finalTranscript',
-    listenerFunc: (data: FinalTranscriptEvent) => void,
-  ): Promise<PluginListenerHandle> & PluginListenerHandle
   removeAllListeners(): Promise<void>
-}
-
-export interface FinalTranscriptEvent {
-  text: string
-  reason: 'manual-stop' | 'engine-end' | 'no-match' | 'error'
-  message?: string
-}
-
-export interface SpeechSessionResult {
-  transcript: string
-  reason: FinalTranscriptEvent['reason']
-  message?: string
 }
 
 const SpeechInput = registerPlugin<SpeechInputPlugin>('SpeechInput')
 
 /**
  * ML Kit 語言碼 → 語音辨識 BCP-47 locale。
- * 離線引擎的可用語言依裝置已下載的「裝置端語音辨識」資料而定；
- * 未列出的語言不提供錄音（MVP 以英文為主）。
+ * 端側引擎的可用語言依裝置已下載的模型而定（App 會自動查詢/觸發下載）。
  */
 const SPEECH_LOCALES: Record<string, string> = {
   en: 'en-US',
@@ -170,139 +163,72 @@ export function formatSupportInfo(info: SpeechSupportInfo): string {
     .join('\n')
 }
 
-/** 測試用：重置可用性快取與監聽狀態 */
+// ===== 批次錄音 → 轉逐字稿 =====
+
+let recording = false
+let listenersRegistered = false
+let partialHandler: ((text: string) => void) | null = null
+
+/** 測試用：重置模組狀態 */
 export function resetSpeechServiceForTests(): void {
   availabilityCache = null
-  session = null
+  recording = false
   listenersRegistered = false
-  listening = false
-  restartTimer = null
+  partialHandler = null
 }
-
-type PartialHandler = (text: string) => void
-type SegmentHandler = (segment: string) => void
-type FinalHandler = (result: SpeechSessionResult) => void
-
-interface DictationSession {
-  language: string
-  segments: string[]
-  stopped: boolean
-  onPartial: PartialHandler
-  onSegment: SegmentHandler
-  onFinal: FinalHandler
-}
-
-let session: DictationSession | null = null
-let listenersRegistered = false
-let listening = false
-let restartTimer: ReturnType<typeof setTimeout> | null = null
 
 async function ensureListeners(): Promise<void> {
   if (listenersRegistered) return
   await SpeechInput.addListener('partialTranscript', (data) => {
-    session?.onPartial(String(data?.text ?? ''))
-  })
-  await SpeechInput.addListener('finalTranscript', (data) => {
-    const s = session
-    if (!s) {
-      listening = false
-      return
-    }
-    const text = String(data?.text ?? '')
-    if (text) {
-      s.segments.push(text)
-      s.onSegment(text)
-    }
-    if (data?.reason === 'error') {
-      session = null
-      listening = false
-      s.onFinal({
-        transcript: s.segments.join('\n'),
-        reason: 'error',
-        message: data?.message,
-      })
-      return
-    }
-    if (!s.stopped) {
-      // 連續聽寫：使用者未按停止 → 安靜地接續下一段
-      listening = true
-      restartTimer = setTimeout(() => {
-        restartTimer = null
-        if (session === s && !s.stopped) {
-          SpeechInput.start({ language: speechLocaleFor(s.language) }).catch(() => {
-            // 單次重啟失敗不中斷整場
-          })
-        }
-      }, 200)
-      return
-    }
-    // 使用者已按停止 → 收尾
-    session = null
-    listening = false
-    s.onFinal({
-      transcript: s.segments.join('\n'),
-      reason: data?.reason ?? 'manual-stop',
-    })
+    partialHandler?.(String(data?.text ?? ''))
   })
   listenersRegistered = true
 }
 
-export function isDictating(): boolean {
-  return listening
+export function isRecordingNow(): boolean {
+  return recording
 }
 
 /**
- * 開始「連續聽寫」：講話出字、停頓自動接續，直到 stopDictation()。
- * - onPartial：當前段的即時文字
- * - onSegment：每完成一段呼叫一次（App 端累加顯示）
- * - onFinal：只在使用者停止或發生錯誤時呼叫一次
+ * 開始錄音（不辨識）。onPartialText 只會在稍後轉寫階段被呼叫（顯示逐字稿進度）。
+ * 啟動失敗丟出使用者可讀訊息。
  */
-export async function startDictation(opts: {
-  language: string
-  onPartial: PartialHandler
-  onSegment?: SegmentHandler
-  onFinal: FinalHandler
-}): Promise<void> {
-  if (session) {
-    throw new Error('已在錄音中')
-  }
+export async function startRecording(
+  onPartialText?: (text: string) => void,
+): Promise<void> {
+  if (recording) throw new Error('已在錄音中')
   const available = await checkSpeechAvailability()
   if (!available) {
     throw new Error('此裝置沒有可用的語音辨識服務')
   }
   await ensureListeners()
-  const s: DictationSession = {
-    language: opts.language,
-    segments: [],
-    stopped: false,
-    onPartial: opts.onPartial,
-    onSegment: opts.onSegment ?? (() => {}),
-    onFinal: opts.onFinal,
-  }
-  session = s
-  listening = true
+  partialHandler = onPartialText ?? null
   try {
-    await SpeechInput.start({ language: speechLocaleFor(opts.language) })
+    await SpeechInput.startRecording({})
+    recording = true
   } catch (e) {
-    session = null
-    listening = false
-    throw new Error(e instanceof Error ? e.message : '語音辨識啟動失敗')
+    partialHandler = null
+    throw new Error(e instanceof Error ? e.message : '錄音啟動失敗')
   }
 }
 
-/** 停止連續聽寫：結束當前段後由 onFinal 收尾 */
-export async function stopDictation(): Promise<void> {
-  const s = session
-  if (!s) return
-  s.stopped = true
-  if (restartTimer) {
-    // 正好在兩段之間的重啟空檔：直接收尾，不必等引擎
-    clearTimeout(restartTimer)
-    restartTimer = null
-    session = null
-    listening = false
-    s.onFinal({ transcript: s.segments.join('\n'), reason: 'manual-stop' })
-    return
+/**
+ * 停止錄音並轉逐字稿（整段一次轉，非即時）。
+ * 回傳 { text, seconds }；轉寫失敗會丟錯（帶原生訊息）。
+ */
+export async function stopRecordingAndTranscribe(
+  language: string,
+): Promise<{ text: string; seconds: number }> {
+  if (!recording) throw new Error('沒有進行中的錄音')
+  recording = false
+  const stopped = await SpeechInput.stopRecording()
+  try {
+    const result = await SpeechInput.transcribeFile({
+      path: stopped?.path ?? '',
+      language: speechLocaleFor(language),
+    })
+    return { text: String(result?.text ?? ''), seconds: stopped?.seconds ?? 0 }
+  } finally {
+    partialHandler = null
   }
-  await SpeechInput.stop()
 }

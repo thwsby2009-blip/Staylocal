@@ -11,8 +11,8 @@ import { captureAndTranslate, type CaptureResult } from './services/photoFlow'
 import { listCards, deleteCard, type TravelCard } from './services/cardStore'
 import { LANGUAGES, languageName } from './languages'
 import {
-  startDictation,
-  stopDictation,
+  startRecording as startSpeechRecording,
+  stopRecordingAndTranscribe,
   isSpeechSupported,
   getSpeechDiagnostics,
   getSpeechSupportInfo,
@@ -40,9 +40,18 @@ function App() {
   const [output, setOutput] = useState('')
   const [textError, setTextError] = useState('')
 
-  // 語音聽寫：錄音中狀態 + 本次錄音開始時的輸入框內容（partial 顯示用基底）
-  const [dictating, setDictating] = useState(false)
+  // 語音聽寫（批次：先錄音存檔 → 停止後轉逐字稿）
+  const [recording, setRecording] = useState(false)
+  const [transcribing, setTranscribing] = useState(false)
+  const [recordSeconds, setRecordSeconds] = useState(0)
   const speechBaseRef = useRef('')
+
+  // 錄音計時（顯示錄了多久）
+  useEffect(() => {
+    if (!recording) return
+    const id = setInterval(() => setRecordSeconds((s) => s + 1), 1000)
+    return () => clearInterval(id)
+  }, [recording])
 
   // 語言包管理
   const [downloadedLangs, setDownloadedLangs] = useState<string[]>([])
@@ -164,10 +173,37 @@ function App() {
   }
 
   async function handleDictate() {
-    if (dictating) {
-      await stopDictation()
+    // 按第二次 = 停止錄音 → 轉逐字稿（批次）
+    if (recording) {
+      setRecording(false)
+      setTranscribing(true)
+      setNotice('正在把錄音轉成逐字稿…')
+      try {
+        const res = await stopRecordingAndTranscribe(source)
+        const text = res.text.trim()
+        if (text) {
+          setInput([speechBaseRef.current, text].filter(Boolean).join('\n'))
+          setNotice(`逐字稿完成（錄音 ${Math.round(res.seconds)} 秒）`)
+        } else {
+          setInput(speechBaseRef.current)
+          setNotice('沒有辨識到語音內容（可能太小聲或沒收到聲音）')
+        }
+      } catch (e) {
+        const base = e instanceof Error ? e.message : '轉逐字稿失敗'
+        setInput(speechBaseRef.current)
+        if (base.includes('沒有聽到可辨識的語音')) {
+          // 靜音／太小聲：單純提示，不噴診斷資訊
+          setNotice(base)
+        } else {
+          setTextError(await speechFailureText(base, source))
+        }
+      } finally {
+        setTranscribing(false)
+        setRecordSeconds(0)
+      }
       return
     }
+    if (transcribing) return
     if (busy !== null) return
     if (!isSpeechSupported(source)) {
       setTextError(`「${languageName(source)}」暫不支援語音輸入，請用打字或改選英文`)
@@ -211,36 +247,17 @@ function App() {
     }
 
     try {
-      await startDictation({
-        language: source,
-        onPartial: (text) => {
-          // 即時顯示：已定稿內容 + 當前段辨識中的文字
-          setInput([speechBaseRef.current, text].filter(Boolean).join('\n'))
-        },
-        onSegment: (segment) => {
-          // 一段講完（停頓）→ 累加為已定稿內容，聽寫自動接續
-          speechBaseRef.current = [speechBaseRef.current, segment]
-            .filter(Boolean)
-            .join('\n')
-          setInput(speechBaseRef.current)
-        },
-        onFinal: (result) => {
-          setDictating(false)
-          setInput(speechBaseRef.current)
-          if (result.reason === 'error') {
-            const base = result.message ?? '語音辨識失敗'
-            void speechFailureText(base, source).then(setTextError)
-          } else if (
-            result.reason === 'no-match' &&
-            !speechBaseRef.current.trim()
-          ) {
-            setNotice('沒有聽到可辨識的語音')
-          }
-        },
+      // 只開始錄音，不做辨識；停止後才整段轉逐字稿
+      await startSpeechRecording((partialText) => {
+        // 轉寫階段的即時逐字稿（native 在轉檔期間持續送出）
+        setInput(
+          [speechBaseRef.current, partialText].filter(Boolean).join('\n'),
+        )
       })
-      setDictating(true)
+      setRecording(true)
+      setRecordSeconds(0)
     } catch (e) {
-      const base = e instanceof Error ? e.message : '語音辨識啟動失敗'
+      const base = e instanceof Error ? e.message : '錄音啟動失敗'
       setTextError(await speechFailureText(base, source))
     }
   }
@@ -392,26 +409,32 @@ function App() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder={
-              dictating
-                ? '聽寫中…請講話（停頓會自動接續，按「停止錄音」結束）'
-                : '輸入要翻譯的文字…'
+              recording
+                ? '錄音中…按「停止錄音」後會轉成逐字稿'
+                : transcribing
+                  ? '正在把錄音轉成逐字稿…'
+                  : '輸入要翻譯的文字…'
             }
             rows={5}
           />
 
           <div className="input-actions">
             <button
-              className={dictating ? 'dictate-btn recording' : 'dictate-btn'}
+              className={recording ? 'dictate-btn recording' : 'dictate-btn'}
               onClick={handleDictate}
-              disabled={busy !== null}
-              aria-label={dictating ? '停止錄音' : '開始錄音'}
+              disabled={busy !== null || transcribing}
+              aria-label={recording ? '停止錄音' : '開始錄音'}
             >
-              {dictating ? '⏹ 停止錄音' : '🎤 語音輸入'}
+              {transcribing
+                ? '⏳ 轉逐字稿中…'
+                : recording
+                  ? `⏹ 停止錄音（${recordSeconds}s）`
+                  : '🎤 錄音轉逐字稿'}
             </button>
             <button
               className="translate-btn"
               onClick={handleTranslate}
-              disabled={busy !== null || dictating}
+              disabled={busy !== null || recording || transcribing}
             >
               {busy === 'downloading'
                 ? '下載語言包中…'
@@ -477,7 +500,7 @@ function App() {
           翻譯與辨識完全在你的裝置上執行（ML Kit + OpenCC）。
           唯一的網路行為：首次使用的語言包下載。
         </p>
-        <p className="build-tag">build v13 · 聽寫診斷版（2026-10-29）</p>
+        <p className="build-tag">build v16 · 聽寫診斷版（2026-10-29）</p>
       </footer>
     </div>
   )
