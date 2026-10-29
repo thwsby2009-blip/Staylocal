@@ -64,7 +64,6 @@ A fully offline mobile translation app. Photo or text — everything runs on you
 <img src="docs/architecture/architecture-flow.png" width="680" alt="流程細節">
 
 > 💾 **圖中未標的安裝空間**：APK 內附 68 MB（OCR 10.6 MB／ASR 推論引擎 29.7 MB／翻譯引擎 15.6 MB）；選配下載高準度語音模型 228 MiB（≈ 239 MB）、翻譯語言包每語言約 50 MB。詳見下方[安裝空間](#安裝空間--storage-footprint)。
-> （流程圖中的「高精度語音」即 App 與本文件所稱的「**高準度**語音模型」。）
 
 - 所有辨識與翻譯**完全在裝置上執行**，飛航模式可用
 - 語音走**批次架構**：先錄成 WAV，停止後才把音檔餵給辨識器（連續串流在舊機不可靠）；長錄音自動切段（系統引擎 12 秒、SenseVoice 25 秒）逐段轉寫再接起來
