@@ -3,7 +3,7 @@ import { Translation, Language } from '@capacitor-mlkit/translation'
 /**
  * 語言包管理：確保翻譯前來源/目標語言模型已下載。
  *
- * ML Kit 語言包各約 30MB，翻譯時若缺模型會自動下載（會卡很久且無進度資訊），
+ * ML Kit 語言包實測各約 50MB（官方文件寫 30MB，2026-10 實機量測為 50MB），翻譯時若缺模型會自動下載（會卡很久且無進度資訊），
  * 因此明確管理：先查詢已下載清單，缺的才呼叫 downloadModel。
  */
 
@@ -55,7 +55,7 @@ export async function getDownloadedLanguages(): Promise<string[]> {
   return Array.isArray(result?.languages) ? result.languages : []
 }
 
-/** 下載單一語言包（各約 30MB，建議 WiFi） */
+/** 下載單一語言包（各約 50MB，建議 WiFi） */
 export async function downloadLanguage(language: string): Promise<void> {
   await Translation.downloadModel({ language: language as Language })
 }

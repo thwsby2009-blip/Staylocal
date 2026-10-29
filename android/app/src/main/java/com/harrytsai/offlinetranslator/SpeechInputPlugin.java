@@ -392,7 +392,8 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
         JSObject ret = new JSObject();
         ret.put("installed", installed);
         ret.put("modelBytes", m.exists() ? m.length() : 0);
-        ret.put("sizeMb", Math.round((m.exists() ? m.length() : 0) / 1048576.0));
+        // 用十進位 MB（與卡片上的「約 240MB」一致；1,048,576 進位會顯示成 228 造成不一致）
+        ret.put("sizeMb", Math.round((m.exists() ? m.length() : 0) / 1_000_000.0));
         ret.put("dir", svDir().getAbsolutePath());
         call.resolve(ret);
     }
@@ -427,7 +428,7 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
                 svDownloading = false;
                 JSObject ret = new JSObject();
                 ret.put("installed", true);
-                ret.put("sizeMb", Math.round(model.length() / 1048576.0));
+                ret.put("sizeMb", Math.round(model.length() / 1_000_000.0));
                 call.resolve(ret);
             } catch (Exception e) {
                 svDownloading = false;

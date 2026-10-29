@@ -583,7 +583,7 @@ function App() {
       {tab === 'packs' && (
         <main className="packs-tab">
           <p className="packs-hint">
-            每個語言包約 30MB，下載後該語言即可離線翻譯。
+            每個語言包約 50MB（實測 en/ja/ko/zh 各約 50MB），下載後該語言即可離線翻譯。
             建議出國前在 WiFi 環境預先下載。
           </p>
           {packError && <p className="error">{packError}</p>}
@@ -628,7 +628,7 @@ function App() {
           翻譯與辨識完全在你的裝置上執行（ML Kit + OpenCC）。
           唯一的網路行為：首次使用的語言包下載。
         </p>
-        <p className="build-tag">build v24 · 聽寫診斷版（2026-10-29）</p>
+        <p className="build-tag">build v25 · 聽寫診斷版（2026-10-29）</p>
       </footer>
     </div>
   )
