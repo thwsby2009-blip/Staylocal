@@ -71,9 +71,9 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
     private SpeechRecognizer transcribeRecognizer;
     private ParcelFileDescriptor transcribePfd;
     private boolean transcribing = false;
-    // 轉檔模式的 partial 累積（引擎的 final 常是空的，靠這裡保住文字）
-    private final StringBuilder transcribeAccum = new StringBuilder();
-    private String transcribeCurrent = "";
+    // 轉檔模式的最佳 partial（引擎的 final 常是空的；partial 是同一段的持續修訂
+    // ——只保留最長的一份，絕不能串接，否則同一句會被重複疊加成一坨）
+    private String bestPartial = "";
 
     @PluginMethod
     public void checkAvailability(PluginCall call) {
@@ -398,8 +398,7 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
                     failTranscribe("錄音檔是空的（可能沒收到聲音）");
                     return;
                 }
-                transcribeAccum.setLength(0);
-                transcribeCurrent = "";
+                bestPartial = "";
                 transcribePfd = ParcelFileDescriptor.open(
                         f, ParcelFileDescriptor.MODE_READ_ONLY);
                 transcribeRecognizer = SpeechRecognizer.isOnDeviceRecognitionAvailable(activity)
@@ -677,40 +676,28 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
     public void onPartialResults(Bundle partialResults) {
         String text = firstMatch(partialResults);
         if (transcribing) {
-            // 轉檔模式：累積 partial（final 常常是空的），同時送給前端顯示進度
-            if (text != null && !text.trim().isEmpty()) {
-                if (text.startsWith(transcribeCurrent)) {
-                    transcribeCurrent = text; // 同一段持續增長
-                } else {
-                    if (!transcribeCurrent.trim().isEmpty()) {
-                        if (transcribeAccum.length() > 0) transcribeAccum.append(' ');
-                        transcribeAccum.append(transcribeCurrent.trim());
-                    }
-                    transcribeCurrent = text; // 新的一段
-                }
+            // 轉檔模式：partial 是同一份逐字稿的修訂版 → 只取最長的一份
+            if (text != null && text.trim().length() > bestPartial.length()) {
+                bestPartial = text.trim();
             }
             JSObject data = new JSObject();
-            data.put("text", composeTranscribedText());
+            data.put("text", bestPartial);
             notifyListeners("partialTranscript", data);
             return;
         }
         emitPartial(text);
     }
 
-    /** 轉檔模式的完整文字：累積段落 + 當前段 */
+    /** 轉檔模式的完整文字：引擎 final 為空時用最長的 partial */
     private String composeTranscribedText() {
-        String acc = transcribeAccum.toString().trim();
-        String cur = transcribeCurrent == null ? "" : transcribeCurrent.trim();
-        if (acc.isEmpty()) return cur;
-        if (cur.isEmpty()) return acc;
-        return acc + " " + cur;
+        return bestPartial == null ? "" : bestPartial.trim();
     }
 
     @Override
     public void onResults(Bundle results) {
         String text = firstMatch(results);
         if (transcribing) {
-            // 引擎的 final 常為空（音檔模式）→ 用累積的 partial 文字
+            // 引擎的 final 常為空（音檔模式）→ 用最長的 partial
             if (text == null || text.trim().isEmpty()) {
                 text = composeTranscribedText();
             }
