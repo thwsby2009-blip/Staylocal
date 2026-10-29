@@ -7,8 +7,14 @@ import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.speech.RecognitionListener;
+import android.speech.RecognitionSupport;
+import android.speech.RecognitionSupportCallback;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
+
+import java.util.List;
+
+import org.json.JSONArray;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -76,10 +82,149 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
                 // 保留已收集資料，照常回傳
             }
         }
-        ret.put("speechActivities", acts);
-        ret.put("recognitionServices", svcs);
+        ret.put("speechActivities", toJsonArray(acts));
+        ret.put("recognitionServices", toJsonArray(svcs));
         ret.put("defaultService", def);
         call.resolve(ret);
+    }
+
+    /** ArrayList 直接丢給 JSObject 會被序列化成字串，必須包成 JSONArray */
+    private static JSONArray toJsonArray(List<String> src) {
+        JSONArray arr = new JSONArray();
+        if (src != null) {
+            for (String s : src) {
+                if (s != null) arr.put(s);
+            }
+        }
+        return arr;
+    }
+
+    /**
+     * 官方支援查詢（API 33+）：回報端側辨識的字語言狀態——
+     * installed（可直接用）/ supported（要下載）/ pending（下載中）/ online。
+     * 這是判斷「錯誤 13 到底是缺模型還是服務不支援」的唯一可靠來源。
+     */
+    @PluginMethod
+    public void checkSupport(PluginCall call) {
+        Activity activity = getActivity();
+        JSObject ret = new JSObject();
+        ret.put("onDeviceAvailable", false);
+        ret.put("installedOnDeviceLanguages", new JSONArray());
+        ret.put("pendingOnDeviceLanguages", new JSONArray());
+        ret.put("supportedOnDeviceLanguages", new JSONArray());
+        ret.put("onlineLanguages", new JSONArray());
+        ret.put("error", "");
+        if (activity == null) {
+            call.resolve(ret);
+            return;
+        }
+        try {
+            boolean onDevice = Build.VERSION.SDK_INT >= 31
+                    && SpeechRecognizer.isOnDeviceRecognitionAvailable(activity);
+            ret.put("onDeviceAvailable", onDevice);
+            if (Build.VERSION.SDK_INT < 33) {
+                ret.put("error", "此 Android 版本（" + Build.VERSION.SDK_INT + "）沒有支援查詢 API");
+                call.resolve(ret);
+                return;
+            }
+            final boolean useOnDevice = onDevice;
+            final Intent intent = buildIntent("en-US");
+            final JSObject out = ret;
+            // 建立 recognizer 必須在主執行緒
+            activity.runOnUiThread(() -> {
+                try {
+                    final SpeechRecognizer r = useOnDevice
+                            ? SpeechRecognizer.createOnDeviceSpeechRecognizer(activity)
+                            : SpeechRecognizer.createSpeechRecognizer(activity);
+                    r.checkRecognitionSupport(intent, activity.getMainExecutor(),
+                            new RecognitionSupportCallback() {
+                                @Override
+                                public void onSupportResult(RecognitionSupport support) {
+                                    out.put("installedOnDeviceLanguages",
+                                            toJsonArray(support.getInstalledOnDeviceLanguages()));
+                                    out.put("pendingOnDeviceLanguages",
+                                            toJsonArray(support.getPendingOnDeviceLanguages()));
+                                    out.put("supportedOnDeviceLanguages",
+                                            toJsonArray(support.getSupportedOnDeviceLanguages()));
+                                    out.put("onlineLanguages",
+                                            toJsonArray(support.getOnlineLanguages()));
+                                    call.resolve(out);
+                                }
+
+                                @Override
+                                public void onError(int error) {
+                                    out.put("error", "支援查詢失敗（錯誤 " + error + "）");
+                                    call.resolve(out);
+                                }
+                            });
+                } catch (Exception e) {
+                    out.put("error", String.valueOf(e.getMessage()));
+                    call.resolve(out);
+                }
+            });
+        } catch (Exception e) {
+            ret.put("error", String.valueOf(e.getMessage()));
+            call.resolve(ret);
+        }
+    }
+
+    /** 觸發端側語言模型下載（API 33+，需網路） */
+    @PluginMethod
+    public void downloadOnDeviceModel(PluginCall call) {
+        Activity activity = getActivity();
+        String language = call.getString("language", "en-US");
+        JSObject ret = new JSObject();
+        ret.put("triggered", false);
+        if (activity == null || Build.VERSION.SDK_INT < 33) {
+            ret.put("message", "此裝置不支援端側模型下載");
+            call.resolve(ret);
+            return;
+        }
+        try {
+            if (!SpeechRecognizer.isOnDeviceRecognitionAvailable(activity)) {
+                ret.put("message", "此裝置沒有端側辨識服務");
+                call.resolve(ret);
+                return;
+            }
+            final Intent intent = buildIntent(language);
+            final JSObject out = ret;
+            // 建立 recognizer 必須在主執行緒
+            activity.runOnUiThread(() -> {
+                try {
+                    SpeechRecognizer r = SpeechRecognizer.createOnDeviceSpeechRecognizer(activity);
+                    r.triggerModelDownload(intent);
+                    out.put("triggered", true);
+                    out.put("message", "已觸發「" + language + "」端側語音模型下載（需網路）");
+                    call.resolve(out);
+                } catch (Exception e) {
+                    out.put("message", "下載觸發失敗：" + e.getMessage());
+                    call.resolve(out);
+                }
+            });
+        } catch (Exception e) {
+            ret.put("message", String.valueOf(e.getMessage()));
+            call.resolve(ret);
+        }
+    }
+
+    private static ArrayList<String> strList(List<String> src) {
+        ArrayList<String> out = new ArrayList<>();
+        if (src != null) {
+            for (String s : src) {
+                if (s != null) out.add(s);
+            }
+        }
+        return out;
+    }
+
+    private static Intent buildIntent(String language) {
+        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, language);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, language);
+        intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+        return intent;
     }
 
     @PluginMethod

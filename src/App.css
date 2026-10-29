@@ -91,7 +91,8 @@ h1 {
   color: var(--error);
   font-size: 13px;
   margin: 0;
-  text-align: center;
+  white-space: pre-line;
+  text-align: left;
   word-break: break-all;
 }
 

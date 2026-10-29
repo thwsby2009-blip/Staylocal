@@ -15,6 +15,11 @@ import {
   stopDictation,
   isSpeechSupported,
   getSpeechDiagnostics,
+  getSpeechSupportInfo,
+  formatSupportInfo,
+  triggerOnDeviceModelDownload,
+  speechLocaleFor,
+  toLangList,
 } from './services/speechService'
 
 type Tab = 'collection' | 'text' | 'packs'
@@ -131,6 +136,33 @@ function App() {
 
   // ===== 語音聽寫（離線）=====
 
+  // 失敗訊息組裝：基礎訊息 + 系統診斷 + 官方支援查詢（缺模型則自動觸發下載）
+  async function speechFailureText(base: string, lang: string): Promise<string> {
+    const parts = [base]
+    const diag = await getSpeechDiagnostics()
+    if (diag) {
+      parts.push(
+        `[診斷] available=${diag.available}\n辨識活動=${JSON.stringify(diag.speechActivities)}\n` +
+          `辨識服務=${JSON.stringify(diag.recognitionServices)}\n預設服務=${diag.defaultService || '（無）'}`,
+      )
+    }
+    const info = await getSpeechSupportInfo()
+    if (info) {
+      parts.push(`[支援查詢]\n${formatSupportInfo(info)}`)
+      const want = speechLocaleFor(lang).toLowerCase()
+      const has = (arr: unknown) =>
+        toLangList(arr).some((l) => l.toLowerCase() === want)
+      if (
+        !has(info.installedOnDeviceLanguages) &&
+        has(info.supportedOnDeviceLanguages)
+      ) {
+        const msg = await triggerOnDeviceModelDownload(speechLocaleFor(lang))
+        if (msg) parts.push(`${msg}；完成後再按一次語音輸入`)
+      }
+    }
+    return parts.join('\n\n')
+  }
+
   async function handleDictate() {
     if (dictating) {
       await stopDictation()
@@ -147,37 +179,34 @@ function App() {
       await startDictation({
         language: source,
         onPartial: (text) => {
-          // 即時顯示：基底 + 當前辨識中的文字
+          // 即時顯示：已定稿內容 + 當前段辨識中的文字
           setInput([speechBaseRef.current, text].filter(Boolean).join('\n'))
+        },
+        onSegment: (segment) => {
+          // 一段講完（停頓）→ 累加為已定稿內容，聽寫自動接續
+          speechBaseRef.current = [speechBaseRef.current, segment]
+            .filter(Boolean)
+            .join('\n')
+          setInput(speechBaseRef.current)
         },
         onFinal: (result) => {
           setDictating(false)
-          if (result.transcript) {
-            setInput(
-              [speechBaseRef.current, result.transcript]
-                .filter(Boolean)
-                .join('\n'),
-            )
-          } else {
-            setInput(speechBaseRef.current) // 空結果（無語音/錯誤）還原基底
-          }
-          if (result.reason === 'error' || result.reason === 'no-match') {
-            setTextError(result.message ?? '語音辨識失敗')
+          setInput(speechBaseRef.current)
+          if (result.reason === 'error') {
+            const base = result.message ?? '語音辨識失敗'
+            void speechFailureText(base, source).then(setTextError)
+          } else if (
+            result.reason === 'no-match' &&
+            !speechBaseRef.current.trim()
+          ) {
+            setNotice('沒有聽到可辨識的語音')
           }
         },
       })
       setDictating(true)
     } catch (e) {
       const base = e instanceof Error ? e.message : '語音辨識啟動失敗'
-      // 帶診斷資料：系統實際看得到的辨識元件，用來定位「服務不存在 vs 看不見」
-      const diag = await getSpeechDiagnostics()
-      if (diag) {
-        setTextError(
-          `${base}\n[診斷] available=${diag.available}\n辨識活動=${JSON.stringify(diag.speechActivities)}\n辨識服務=${JSON.stringify(diag.recognitionServices)}\n預設服務=${diag.defaultService || '（無）'}`,
-        )
-      } else {
-        setTextError(base)
-      }
+      setTextError(await speechFailureText(base, source))
     }
   }
 
@@ -328,7 +357,9 @@ function App() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder={
-              dictating ? '聽寫中，請開口說話…' : '輸入要翻譯的文字…'
+              dictating
+                ? '聽寫中…請講話（停頓會自動接續，按「停止錄音」結束）'
+                : '輸入要翻譯的文字…'
             }
             rows={5}
           />
@@ -411,7 +442,7 @@ function App() {
           翻譯與辨識完全在你的裝置上執行（ML Kit + OpenCC）。
           唯一的網路行為：首次使用的語言包下載。
         </p>
-        <p className="build-tag">build v9 · 聽寫診斷版（2026-10-29）</p>
+        <p className="build-tag">build v12 · 聽寫診斷版（2026-10-29）</p>
       </footer>
     </div>
   )
