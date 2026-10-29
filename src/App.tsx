@@ -175,6 +175,41 @@ function App() {
     }
     setTextError('')
     speechBaseRef.current = input // 基底 = 錄音開始時的內容（保留手動編輯與前次聽寫結果）
+
+    // 預檢：端側模型必須已安裝才進聽寫（缺模型時引擎會靜默 no-match，講了也白講）
+    try {
+      const info = await getSpeechSupportInfo()
+      if (info) {
+        const want = speechLocaleFor(source).toLowerCase()
+        const norm = (arr: unknown) =>
+          toLangList(arr).map((l) => l.toLowerCase())
+        const installed = norm(info.installedOnDeviceLanguages)
+        const supported = norm(info.supportedOnDeviceLanguages)
+        const pending = norm(info.pendingOnDeviceLanguages)
+        if (!installed.includes(want)) {
+          if (supported.includes(want)) {
+            const msg = await triggerOnDeviceModelDownload(
+              speechLocaleFor(source),
+            )
+            setTextError(
+              `${msg ?? '已觸發端側語音模型下載'}\n下載完成後再按一次「🎤 語音輸入」。\n（下載需要 WiFi 網路，模型約數十 MB）`,
+            )
+          } else if (pending.includes(want)) {
+            setTextError(
+              `「${speechLocaleFor(source)}」端側語音模型下載中，請稍後再按一次「🎤 語音輸入」。`,
+            )
+          } else {
+            setTextError(
+              `此裝置的端側辨識不支援「${speechLocaleFor(source)}」，請改用其他來源語言。`,
+            )
+          }
+          return
+        }
+      }
+    } catch {
+      // 預檢失敗不阻擋（讓後續流程自行回報）
+    }
+
     try {
       await startDictation({
         language: source,
@@ -442,7 +477,7 @@ function App() {
           翻譯與辨識完全在你的裝置上執行（ML Kit + OpenCC）。
           唯一的網路行為：首次使用的語言包下載。
         </p>
-        <p className="build-tag">build v12 · 聽寫診斷版（2026-10-29）</p>
+        <p className="build-tag">build v13 · 聽寫診斷版（2026-10-29）</p>
       </footer>
     </div>
   )
