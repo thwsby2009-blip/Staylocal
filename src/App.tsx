@@ -27,7 +27,9 @@ import {
   getAsrModelStatus,
   downloadAsrModel,
   deleteAsrModel,
+  clearPreviousDictation,
   type AsrModelStatus,
+  type DictationSnapshot,
 } from './services/speechService'
 
 type Tab = 'collection' | 'text' | 'packs'
@@ -57,6 +59,8 @@ function App() {
   const [transcribing, setTranscribing] = useState(false)
   const [recordSeconds, setRecordSeconds] = useState(0)
   const speechBaseRef = useRef('')
+  // 上一次聽寫的快照（下次錄音前要先清掉舊逐字稿，否則每次結果都往上疊）
+  const lastDictationRef = useRef<DictationSnapshot | null>(null)
 
   // 高準度離線語音模型（SenseVoice，選配）
   const [asrStatus, setAsrStatus] = useState<AsrModelStatus | null>(null)
@@ -249,7 +253,14 @@ function App() {
           text = toTaiwanTraditional(text)
         }
         if (text) {
-          setInput([speechBaseRef.current, text].filter(Boolean).join('\n'))
+          const nextInput = [speechBaseRef.current, text]
+            .filter(Boolean)
+            .join('\n')
+          lastDictationRef.current = {
+            expected: nextInput,
+            base: speechBaseRef.current,
+          }
+          setInput(nextInput)
           setNotice(
             `逐字稿完成（錄音 ${Math.round(res.seconds)} 秒${
               res.engine === 'sensevoice' ? '・高準度模型' : ''
@@ -283,7 +294,13 @@ function App() {
       return
     }
     setTextError('')
-    speechBaseRef.current = input // 基底 = 錄音開始時的內容（保留手動編輯與前次聽寫結果）
+    // 新的一次錄音：先清掉上一次的逐字稿，避免每次結果一直往上疊。
+    // 僅在輸入框與上次聽寫結果完全相同（使用者沒動過）時清回聽寫前內容；
+    // 使用者改過就原樣保留，不覆寫人工編輯。
+    const base = clearPreviousDictation(input, lastDictationRef.current)
+    if (base !== input) setInput(base)
+    lastDictationRef.current = null
+    speechBaseRef.current = base // 基底 = 這次錄音開始時的內容
 
     // 預檢：端側模型必須已安裝才進聽寫（缺模型時引擎會靜默 no-match，講了也白講）
     try {
@@ -611,7 +628,7 @@ function App() {
           翻譯與辨識完全在你的裝置上執行（ML Kit + OpenCC）。
           唯一的網路行為：首次使用的語言包下載。
         </p>
-        <p className="build-tag">build v22 · 聽寫診斷版（2026-10-29）</p>
+        <p className="build-tag">build v24 · 聽寫診斷版（2026-10-29）</p>
       </footer>
     </div>
   )

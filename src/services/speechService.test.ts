@@ -13,6 +13,7 @@ import {
   getAsrModelStatus,
   downloadAsrModel,
   deleteAsrModel,
+  clearPreviousDictation,
 } from './speechService'
 
 // Mock 自製 Capacitor 插件（原生橋接在單元測試不存在）
@@ -157,6 +158,29 @@ describe('speechService（批次：先錄音、停止後轉逐字稿）', () => 
     expect(toLangList('[en-US, ja-JP]')).toEqual(['en-US', 'ja-JP'])
     expect(toLangList('[]')).toEqual([])
     expect(toLangList(undefined)).toEqual([])
+  })
+
+  it('clearPreviousDictation：未動過才清回聽寫前內容，改過則保留', () => {
+    // 上一次聽寫前是空的、結果是「你好世界」→ 這次輸入框還是它（沒動）→ 清空
+    expect(
+      clearPreviousDictation('你好世界', { expected: '你好世界', base: '' }),
+    ).toBe('')
+    // 上次聽寫前有手打內容 → 清掉逐字稿後還原成手打內容
+    expect(
+      clearPreviousDictation('要翻譯的字\n你好世界', {
+        expected: '要翻譯的字\n你好世界',
+        base: '要翻譯的字',
+      }),
+    ).toBe('要翻譯的字')
+    // 使用者改過（與上次結果不同）→ 原樣保留，不覆寫人工編輯
+    expect(
+      clearPreviousDictation('要翻譯的字\n你好世界（我改過）', {
+        expected: '要翻譯的字\n你好世界',
+        base: '要翻譯的字',
+      }),
+    ).toBe('要翻譯的字\n你好世界（我改過）')
+    // 沒有快照（第一次錄音）→ 原樣
+    expect(clearPreviousDictation('打字內容', null)).toBe('打字內容')
   })
 
   it('senseVoiceLangFor：支援的語言回模型語言碼，其餘 null', () => {

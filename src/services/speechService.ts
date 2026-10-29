@@ -279,6 +279,28 @@ export async function stopRecordingAndTranscribe(
   }
 }
 
+/** 上一次聽寫的快照（用來在下次錄音前清掉舊逐字稿） */
+export interface DictationSnapshot {
+  /** 上一次聽寫完成後，輸入框「應該」長什麼樣 */
+  expected: string
+  /** 上一次聽寫前的內容（清掉時還原成它） */
+  base: string
+}
+
+/**
+ * 新的一次錄音開始前，清掉上一次的逐字稿。
+ * 只有當輸入框內容與上一次聽寫後的結果「完全相同」（＝使用者沒動過）才清回
+ * 聽寫前的內容；只要使用者改過就原樣保留，不覆寫人工編輯。
+ * （用完全比對而非包含比對：後者會把「使用者改過的內容」誤切一半。）
+ */
+export function clearPreviousDictation(
+  input: string,
+  snapshot: DictationSnapshot | null,
+): string {
+  if (!snapshot) return input
+  return input === snapshot.expected ? snapshot.base : input
+}
+
 // ===== 高準度離線語音模型（SenseVoice / sherpa-onnx，選用加強）=====
 // 系統端側引擎品質有限且無標點；此模型（約 240MB，首次使用時下載）中文品質明顯較好、
 // 內建標點。語言碼用模型自己的（zh/yue/en/ja/ko），與系統的 BCP-47 不同。
