@@ -514,7 +514,7 @@ function App() {
           翻譯與辨識完全在你的裝置上執行（ML Kit + OpenCC）。
           唯一的網路行為：首次使用的語言包下載。
         </p>
-        <p className="build-tag">build v18 · 聽寫診斷版（2026-10-29）</p>
+        <p className="build-tag">build v20 · 聽寫診斷版（2026-10-29）</p>
       </footer>
     </div>
   )

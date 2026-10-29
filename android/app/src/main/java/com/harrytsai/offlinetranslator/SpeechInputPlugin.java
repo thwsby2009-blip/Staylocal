@@ -67,6 +67,7 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
     private volatile boolean recording = false;
     private File wavFile;
     private volatile long recordedBytes = 0;
+    private int usedAudioSource = -1;
     private PluginCall pendingTranscribeCall;
     private SpeechRecognizer transcribeRecognizer;
     private ParcelFileDescriptor transcribePfd;
@@ -74,6 +75,12 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
     // 轉檔模式的最佳 partial（引擎的 final 常是空的；partial 是同一段的持續修訂
     // ——只保留最長的一份，絕不能串接，否則同一句會被重複疊加成一坨）
     private String bestPartial = "";
+    // 音檔模式引擎只會轉前 ~10-15 秒 → 切成短段逐段轉再接起來
+    private static final int CHUNK_SECONDS = 12;
+    private final java.util.List<File> chunkFiles = new ArrayList<>();
+    private int chunkIndex = -1;
+    private final StringBuilder transcribeResult = new StringBuilder();
+    private String transcribeLanguage = "en-US";
 
     @PluginMethod
     public void checkAvailability(PluginCall call) {
@@ -284,10 +291,21 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
 
             int minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE,
                     AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
-            int bufSize = Math.max(minBuf, SAMPLE_RATE);
-            audioRecord = new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION,
+            int bufSize = Math.max(minBuf * 2, SAMPLE_RATE * 2);
+            // 用「原始收音」：VOICE_RECOGNITION 會被套上 Google 專屬降噪/AGC 處理，
+            // 那條處理鏈的聲音只有 Google 自家引擎聽得懂，離線模型（SenseVoice/
+            // Paraformer）會聽成雜訊。UNPROCESSED 是未處理的原始麥克風訊號。
+            int src = pickAudioSource();
+            audioRecord = new AudioRecord(src,
                     SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO,
                     AudioFormat.ENCODING_PCM_16BIT, bufSize);
+            if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED
+                    && src != MediaRecorder.AudioSource.MIC) {
+                audioRecord.release();
+                src = MediaRecorder.AudioSource.MIC;
+                audioRecord = new AudioRecord(src, SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO,
+                        AudioFormat.ENCODING_PCM_16BIT, bufSize);
+            }
             if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
                 audioRecord.release();
                 audioRecord = null;
@@ -295,6 +313,7 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
                 call.reject("音訊裝置初始化失敗（可能被其他 App 佔用）");
                 return;
             }
+            usedAudioSource = src;
 
             recordedBytes = 0;
             recording = true;
@@ -322,11 +341,27 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
             JSObject ret = new JSObject();
             ret.put("started", true);
             ret.put("path", wavFile.getAbsolutePath());
+            ret.put("audioSource", usedAudioSource); // 6=UNPROCESSED, 1=MIC, 7=VOICE_RECOGNITION
             call.resolve(ret);
         } catch (Exception e) {
             recording = false;
             call.reject("錄音啟動失敗：" + e.getMessage());
         }
+    }
+
+    /** 選收音來源：優先「原始未處理」收音，裝置不支援才退回 MIC */
+    private int pickAudioSource() {
+        try {
+            android.media.AudioManager am = (android.media.AudioManager)
+                    getContext().getSystemService(Context.AUDIO_SERVICE);
+            String supported = am == null ? null : am.getProperty(
+                    android.media.AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED);
+            if ("true".equals(supported)) {
+                return MediaRecorder.AudioSource.UNPROCESSED;
+            }
+        } catch (Exception ignored) {
+        }
+        return MediaRecorder.AudioSource.MIC;
     }
 
     /** 停止錄音：補 WAV 表頭，回傳路徑/秒數 */
@@ -354,6 +389,7 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
             RandomAccessFile raf = new RandomAccessFile(wavFile, "rw");
             raf.seek(0);
             raf.write(wavHeader((int) recordedBytes));
+            raf.setLength(44 + recordedBytes); // 截掉表頭宣告之外的殘留位元組
             raf.close();
         } catch (Exception ignored) {
         }
@@ -366,10 +402,10 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
     }
 
     /**
-     * 把錄好的 WAV 交給端側辨識器轉逐字稿。
-     * 用 API 33+ 的 EXTRA_AUDIO_SOURCE（ParcelFileDescriptor）餵音檔——
-     * 不需即時串流，不受段落重啟限制，全程離線。
-     * 轉寫中的即時文字走 partialTranscript 事件；完成時 resolve { text }。
+     * 把錄好的 WAV 交給端側辨識器轉逐字稿（批次、全程離線）。
+     * 關鍵：引擎對音檔只會轉前面約 10-15 秒 → 先把音檔切成 CHUNK_SECONDS 秒的短段，
+     * 逐段餵給辨識器再把文字接起來（每段短，準度也較好）。
+     * 進度走 partialTranscript 事件；全部完成後 resolve { text }。
      */
     @PluginMethod
     public void transcribeFile(PluginCall call) {
@@ -390,6 +426,7 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
             return;
         }
         pendingTranscribeCall = call;
+        transcribeLanguage = language;
         transcribing = true;
         activity.runOnUiThread(() -> {
             try {
@@ -399,50 +436,129 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
                     return;
                 }
                 bestPartial = "";
-                transcribePfd = ParcelFileDescriptor.open(
-                        f, ParcelFileDescriptor.MODE_READ_ONLY);
-                transcribeRecognizer = SpeechRecognizer.isOnDeviceRecognitionAvailable(activity)
-                        ? SpeechRecognizer.createOnDeviceSpeechRecognizer(activity)
-                        : SpeechRecognizer.createSpeechRecognizer(activity);
-                transcribeRecognizer.setRecognitionListener(this);
+                transcribeResult.setLength(0);
+                chunkIndex = -1;
+                chunkFiles.clear();
 
-                Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-                intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                        RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-                intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, language);
-                intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
-                intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE, transcribePfd);
-                intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, 1);
-                intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_ENCODING,
-                        AudioFormat.ENCODING_PCM_16BIT);
-                intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, SAMPLE_RATE);
-                transcribeRecognizer.startListening(intent);
-
-                // 逾時保險：音長 ×4 或至少 60 秒沒結果就收手
-                long audioSeconds = Math.max(1, (f.length() - 44) / (2 * SAMPLE_RATE));
-                long timeoutMs = Math.max(60_000L, audioSeconds * 4000L);
-                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
-                    if (transcribing && pendingTranscribeCall != null) {
-                        // 逾時但已累積文字 → 直接收下，不讓使用者白等
-                        String acc = composeTranscribedText();
-                        if (!acc.isEmpty()) {
-                            finishTranscribe(acc, null);
-                        } else {
-                            failTranscribe("轉逐字稿逾時（引擎未回報結果）");
-                        }
-                    }
-                }, timeoutMs);
+                // 切段（跳過 44 byte 表頭）
+                final int chunkBytes = CHUNK_SECONDS * SAMPLE_RATE * 2;
+                java.io.FileInputStream in = new java.io.FileInputStream(f);
+                in.skip(44);
+                byte[] buf = new byte[chunkBytes];
+                int idx = 0;
+                while (true) {
+                    int read = readFully(in, buf, chunkBytes);
+                    if (read <= 0) break;
+                    File cf = new File(getContext().getCacheDir(), "chunk_" + idx + ".wav");
+                    FileOutputStream out = new FileOutputStream(cf);
+                    out.write(wavHeader(read));
+                    out.write(buf, 0, read);
+                    out.close();
+                    chunkFiles.add(cf);
+                    idx++;
+                    if (read < chunkBytes) break;
+                }
+                in.close();
+                if (chunkFiles.isEmpty()) {
+                    failTranscribe("錄音檔是空的（可能沒收到聲音）");
+                    return;
+                }
+                startChunk(0);
             } catch (Exception e) {
                 failTranscribe("轉逐字稿啟動失敗：" + e.getMessage());
             }
         });
     }
 
+    /** 轉寫某一段（每段用全新的 recognizer + 該段音檔） */
+    private void startChunk(int index) {
+        Activity activity = getActivity();
+        if (activity == null) {
+            failTranscribe("Activity 不可用");
+            return;
+        }
+        cleanupTranscribe(); // 清掉前一段的 recognizer / PFD
+        if (index < 0 || index >= chunkFiles.size()) {
+            finishTranscribe(transcribeResult.toString().trim(), null);
+            return;
+        }
+        chunkIndex = index;
+        bestPartial = "";
+        try {
+            transcribePfd = ParcelFileDescriptor.open(
+                    chunkFiles.get(index), ParcelFileDescriptor.MODE_READ_ONLY);
+            transcribeRecognizer = SpeechRecognizer.isOnDeviceRecognitionAvailable(activity)
+                    ? SpeechRecognizer.createOnDeviceSpeechRecognizer(activity)
+                    : SpeechRecognizer.createSpeechRecognizer(activity);
+            transcribeRecognizer.setRecognitionListener(this);
+
+            Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, transcribeLanguage);
+            intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+            intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE, transcribePfd);
+            intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, 1);
+            intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_ENCODING,
+                    AudioFormat.ENCODING_PCM_16BIT);
+            intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, SAMPLE_RATE);
+            transcribeRecognizer.startListening(intent);
+
+            // 每段逾時 30 秒（單段只有 12 秒音訊，正常 1-3 秒就回）
+            final int startedIndex = index;
+            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                if (transcribing && pendingTranscribeCall != null && chunkIndex == startedIndex) {
+                    appendChunkText();
+                    startChunk(startedIndex + 1);
+                }
+            }, 30_000L);
+        } catch (Exception e) {
+            failTranscribe("轉逐字稿啟動失敗：" + e.getMessage());
+        }
+    }
+
+    /** 把當前段的最佳 partial 收進總結果 */
+    private void appendChunkText() {
+        String t = bestPartial == null ? "" : bestPartial.trim();
+        if (!t.isEmpty()) {
+            if (transcribeResult.length() > 0) transcribeResult.append('\n');
+            transcribeResult.append(t);
+        }
+    }
+
+    /** 目前顯示用文字：已完成段落 + 當前段 */
+    private String currentShownText() {
+        String acc = transcribeResult.toString().trim();
+        String cur = bestPartial == null ? "" : bestPartial.trim();
+        if (acc.isEmpty()) return cur;
+        if (cur.isEmpty()) return acc;
+        return acc + "\n" + cur;
+    }
+
+    private static int readFully(java.io.FileInputStream in, byte[] buf, int len)
+            throws Exception {
+        int total = 0;
+        while (total < len) {
+            int n = in.read(buf, total, len - total);
+            if (n < 0) break;
+            total += n;
+        }
+        return total;
+    }
+
     private void finishTranscribe(String text, String errorMessage) {
         PluginCall call = pendingTranscribeCall;
         pendingTranscribeCall = null;
         transcribing = false;
+        chunkIndex = -1;
         cleanupTranscribe();
+        for (File cf : chunkFiles) {
+            try {
+                cf.delete();
+            } catch (Exception ignored) {
+            }
+        }
+        chunkFiles.clear();
         if (call == null) return;
         if (errorMessage != null) {
             call.reject(errorMessage);
@@ -681,27 +797,23 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
                 bestPartial = text.trim();
             }
             JSObject data = new JSObject();
-            data.put("text", bestPartial);
+            data.put("text", currentShownText());
             notifyListeners("partialTranscript", data);
             return;
         }
         emitPartial(text);
     }
 
-    /** 轉檔模式的完整文字：引擎 final 為空時用最長的 partial */
-    private String composeTranscribedText() {
-        return bestPartial == null ? "" : bestPartial.trim();
-    }
-
     @Override
     public void onResults(Bundle results) {
         String text = firstMatch(results);
         if (transcribing) {
-            // 引擎的 final 常為空（音檔模式）→ 用最長的 partial
-            if (text == null || text.trim().isEmpty()) {
-                text = composeTranscribedText();
+            // final 常為空（音檔模式）→ 用本段最長的 partial，收下後換下一段
+            if (text != null && text.trim().length() > bestPartial.length()) {
+                bestPartial = text.trim();
             }
-            finishTranscribe(text, null);
+            appendChunkText();
+            startChunk(chunkIndex + 1);
             return;
         }
         emitFinal(text, manuallyStopped ? "manual-stop" : "engine-end", null);
@@ -711,7 +823,15 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
     public void onError(int error) {
         String[] rm = describeError(error);
         if (transcribing) {
-            finishTranscribe("", rm[1]);
+            // 本段失敗：收下已有文字、繼續下一段；最後一段才決定成功或失敗
+            appendChunkText();
+            if (chunkIndex + 1 < chunkFiles.size()) {
+                startChunk(chunkIndex + 1);
+            } else if (transcribeResult.toString().trim().isEmpty()) {
+                finishTranscribe("", rm[1]);
+            } else {
+                finishTranscribe(transcribeResult.toString().trim(), null);
+            }
             return;
         }
         emitFinal("", rm[0], rm[1]);
