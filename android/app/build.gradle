@@ -7,9 +7,14 @@ android {
         applicationId "com.harrytsai.offlinetranslator"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 20
+        versionCode 21
         versionName "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        // 只打包 arm64-v8a：sherpa-onnx AAR 內四種 ABI 的 .so 共 126MB，
+        // 全打包會讓 APK 暴肥（現代手機皆為 arm64）
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
@@ -32,6 +37,10 @@ repositories {
 
 dependencies {
     implementation fileTree(include: ['*.jar'], dir: 'libs')
+    // 離線語音辨識（SenseVoice）。AAR 不進版控（49MB），用 scripts/fetch-deps.sh 取得。
+    implementation files('libs/sherpa-onnx-2.0.1.aar')
+    // AAR 內為 Kotlin 實作，需 Kotlin 標準函式庫
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:2.2.0"
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"

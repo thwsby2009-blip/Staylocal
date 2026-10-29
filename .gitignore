@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# 原生相依（49MB AAR，用 scripts/fetch-deps.sh 下載）
+android/app/libs/*.aar
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -22,3 +25,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# 測試錄音檔（含個人語音，不進版控）
+screenshots/*.wav
+android/app/build/outputs

@@ -44,9 +44,28 @@ export interface SpeechInputPlugin {
   transcribeFile(options: { path: string; language: string }): Promise<{
     text: string
   }>
+  /** 高準度離線模型（SenseVoice）狀態 */
+  asrModelStatus(): Promise<{
+    installed: boolean
+    modelBytes: number
+    sizeMb: number
+    dir: string
+  }>
+  /** 下載高準度離線模型（背景執行，進度走 asrDownloadProgress） */
+  downloadAsrModel(options: {
+    modelUrl?: string
+    tokensUrl?: string
+  }): Promise<{ installed: boolean; sizeMb: number }>
+  /** 刪除高準度離線模型（釋放空間） */
+  deleteAsrModel(): Promise<{ deleted: boolean }>
+  /** 用 SenseVoice 轉寫音檔（離線、含標點） */
+  transcribeWithSenseVoice(options: {
+    path: string
+    language: string
+  }): Promise<{ text: string }>
   addListener(
-    eventName: 'partialTranscript',
-    listenerFunc: (data: { text: string }) => void,
+    eventName: 'partialTranscript' | 'asrDownloadProgress',
+    listenerFunc: (data: Record<string, unknown>) => void,
   ): Promise<PluginListenerHandle> & PluginListenerHandle
   removeAllListeners(): Promise<void>
 }
@@ -175,6 +194,8 @@ export function resetSpeechServiceForTests(): void {
   recording = false
   listenersRegistered = false
   partialHandler = null
+  downloadHandler = null
+  downloadListenerReady = false
 }
 
 async function ensureListeners(): Promise<void> {
@@ -214,21 +235,132 @@ export async function startRecording(
 
 /**
  * 停止錄音並轉逐字稿（整段一次轉，非即時）。
- * 回傳 { text, seconds }；轉寫失敗會丟錯（帶原生訊息）。
+ * 已安裝高準度模型（SenseVoice）且該語言支援時優先使用（品質較好、含標點）；
+ * 未安裝或推論失敗則退回系統端側引擎。
+ * 回傳 { text, seconds, engine }；兩條路都失敗才丟錯。
  */
 export async function stopRecordingAndTranscribe(
   language: string,
-): Promise<{ text: string; seconds: number }> {
+  options?: { preferSenseVoice?: boolean },
+): Promise<{ text: string; seconds: number; engine: 'sensevoice' | 'system' }> {
   if (!recording) throw new Error('沒有進行中的錄音')
   recording = false
   const stopped = await SpeechInput.stopRecording()
+  const path = stopped?.path ?? ''
+  const seconds = stopped?.seconds ?? 0
   try {
+    const svLang = senseVoiceLangFor(language)
+    if (options?.preferSenseVoice && svLang) {
+      const status = await getAsrModelStatus()
+      if (status?.installed) {
+        try {
+          const r = await SpeechInput.transcribeWithSenseVoice({
+            path,
+            language: svLang,
+          })
+          const text = String(r?.text ?? '')
+          if (text.trim()) return { text, seconds, engine: 'sensevoice' }
+        } catch {
+          // 高準度模型出錯就退回系統引擎，不讓使用者卡住
+        }
+      }
+    }
     const result = await SpeechInput.transcribeFile({
-      path: stopped?.path ?? '',
+      path,
       language: speechLocaleFor(language),
     })
-    return { text: String(result?.text ?? ''), seconds: stopped?.seconds ?? 0 }
+    return {
+      text: String(result?.text ?? ''),
+      seconds,
+      engine: 'system' as const,
+    }
   } finally {
     partialHandler = null
+  }
+}
+
+// ===== 高準度離線語音模型（SenseVoice / sherpa-onnx，選用加強）=====
+// 系統端側引擎品質有限且無標點；此模型（約 240MB，首次使用時下載）中文品質明顯較好、
+// 內建標點。語言碼用模型自己的（zh/yue/en/ja/ko），與系統的 BCP-47 不同。
+
+export interface AsrModelStatus {
+  installed: boolean
+  modelBytes: number
+  sizeMb: number
+  dir: string
+}
+
+export interface AsrDownloadProgress {
+  file: string
+  received: number
+  total: number
+  percent: number
+}
+
+const SENSEVOICE_LOCALES: Record<string, string> = {
+  zh: 'zh',
+  yue: 'yue',
+  en: 'en',
+  ja: 'ja',
+  ko: 'ko',
+}
+
+/** 該語言是否支援高準度模型（不支援回 null） */
+export function senseVoiceLangFor(langCode: string): string | null {
+  return SENSEVOICE_LOCALES[langCode] ?? null
+}
+
+let downloadHandler: ((p: AsrDownloadProgress) => void) | null = null
+let downloadListenerReady = false
+
+async function ensureDownloadListener(): Promise<void> {
+  if (downloadListenerReady) return
+  await SpeechInput.addListener('asrDownloadProgress', (data) => {
+    downloadHandler?.({
+      file: String(data?.file ?? ''),
+      received: Number(data?.received ?? 0),
+      total: Number(data?.total ?? 0),
+      percent: Number(data?.percent ?? -1),
+    })
+  })
+  downloadListenerReady = true
+}
+
+/** 查詢高準度模型是否已安裝（瀏覽器預覽時回 null） */
+export async function getAsrModelStatus(): Promise<AsrModelStatus | null> {
+  try {
+    const r = await SpeechInput.asrModelStatus()
+    return {
+      installed: !!r?.installed,
+      modelBytes: Number(r?.modelBytes ?? 0),
+      sizeMb: Number(r?.sizeMb ?? 0),
+      dir: String(r?.dir ?? ''),
+    }
+  } catch {
+    return null
+  }
+}
+
+/** 下載高準度模型（需網路，約 240MB）；回傳實際大小 MB */
+export async function downloadAsrModel(
+  onProgress?: (p: AsrDownloadProgress) => void,
+): Promise<number> {
+  downloadHandler = onProgress ?? null
+  await ensureDownloadListener()
+  try {
+    const r = await SpeechInput.downloadAsrModel({})
+    return Number(r?.sizeMb ?? 0)
+  } finally {
+    downloadHandler = null
+  }
+}
+
+/** 刪除高準度模型 */
+export async function deleteAsrModel(): Promise<boolean> {
+  try {
+    const r = await SpeechInput.deleteAsrModel()
+    return !!r?.deleted
+  } catch {
+    return false
   }
 }

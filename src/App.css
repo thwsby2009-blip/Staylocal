@@ -283,6 +283,57 @@ textarea {
   flex: 1;
 }
 
+/* 高準度語音模型（SenseVoice，選配） */
+.asr-model-card {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(120, 90, 60, 0.25);
+  border-radius: 10px;
+  background: var(--card);
+}
+
+.asr-model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.asr-model-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.asr-model-btn {
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  font-size: 13px;
+  border-radius: 8px;
+  border: 1px solid rgba(120, 90, 60, 0.35);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.asr-model-btn.primary {
+  background: #c8681f;
+  color: #fff;
+  border-color: transparent;
+  font-weight: 600;
+}
+
+.asr-model-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.asr-model-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  opacity: 0.75;
+}
+
 .dictate-btn {
   flex: 0 0 auto;
   padding: 14px 18px;

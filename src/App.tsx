@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
-import { translateText } from './services/translationService'
+import {
+  translateText,
+  toTaiwanTraditional,
+  isChinese,
+} from './services/translationService'
 import {
   ensureModelsReady,
   getDownloadedLanguages,
@@ -20,6 +24,10 @@ import {
   triggerOnDeviceModelDownload,
   speechLocaleFor,
   toLangList,
+  getAsrModelStatus,
+  downloadAsrModel,
+  deleteAsrModel,
+  type AsrModelStatus,
 } from './services/speechService'
 
 type Tab = 'collection' | 'text' | 'packs'
@@ -50,12 +58,22 @@ function App() {
   const [recordSeconds, setRecordSeconds] = useState(0)
   const speechBaseRef = useRef('')
 
+  // 高準度離線語音模型（SenseVoice，選配）
+  const [asrStatus, setAsrStatus] = useState<AsrModelStatus | null>(null)
+  const [asrProgress, setAsrProgress] = useState<number | null>(null)
+  const [asrBusy, setAsrBusy] = useState(false)
+
   // 錄音計時（顯示錄了多久）
   useEffect(() => {
     if (!recording) return
     const id = setInterval(() => setRecordSeconds((s) => s + 1), 1000)
     return () => clearInterval(id)
   }, [recording])
+
+  // 開頁時查一次高準度模型狀態（瀏覽器預覽時回 null）
+  useEffect(() => {
+    getAsrModelStatus().then(setAsrStatus)
+  }, [])
 
   // 記住語言選擇（重啟後不重置）
   useEffect(() => {
@@ -184,6 +202,37 @@ function App() {
     return parts.join('\n\n')
   }
 
+  async function handleDownloadAsrModel() {
+    setAsrBusy(true)
+    setAsrProgress(0)
+    setTextError('')
+    setNotice('正在下載高準度語音模型（約 240MB，請保持網路連線）…')
+    try {
+      const mb = await downloadAsrModel((p) => {
+        setAsrProgress(p.percent >= 0 ? p.percent : null)
+      })
+      setAsrStatus(await getAsrModelStatus())
+      setNotice(`高準度語音模型下載完成（${mb}MB），之後的錄音會自動使用它`)
+    } catch (e) {
+      setTextError(e instanceof Error ? e.message : '模型下載失敗')
+      setNotice('')
+    } finally {
+      setAsrBusy(false)
+      setAsrProgress(null)
+    }
+  }
+
+  async function handleDeleteAsrModel() {
+    setAsrBusy(true)
+    try {
+      await deleteAsrModel()
+      setAsrStatus(await getAsrModelStatus())
+      setNotice('已移除高準度語音模型（改用系統語音輸入）')
+    } finally {
+      setAsrBusy(false)
+    }
+  }
+
   async function handleDictate() {
     // 按第二次 = 停止錄音 → 轉逐字稿（批次）
     if (recording) {
@@ -191,11 +240,21 @@ function App() {
       setTranscribing(true)
       setNotice('正在把錄音轉成逐字稿…')
       try {
-        const res = await stopRecordingAndTranscribe(source)
-        const text = res.text.trim()
+        const res = await stopRecordingAndTranscribe(source, {
+          preferSenseVoice: true,
+        })
+        let text = res.text.trim()
+        // 高準度模型的中文輸出為簡體 → 轉台灣繁體（沿用翻譯用的 OpenCC）
+        if (text && res.engine === 'sensevoice' && isChinese(source)) {
+          text = toTaiwanTraditional(text)
+        }
         if (text) {
           setInput([speechBaseRef.current, text].filter(Boolean).join('\n'))
-          setNotice(`逐字稿完成（錄音 ${Math.round(res.seconds)} 秒）`)
+          setNotice(
+            `逐字稿完成（錄音 ${Math.round(res.seconds)} 秒${
+              res.engine === 'sensevoice' ? '・高準度模型' : ''
+            }）`,
+          )
         } else {
           setInput(speechBaseRef.current)
           setNotice('沒有辨識到語音內容（可能太小聲或沒收到聲音）')
@@ -458,6 +517,44 @@ function App() {
             </button>
           </div>
 
+          <div className="asr-model-card">
+            {asrStatus?.installed ? (
+              <>
+                <div className="asr-model-row">
+                  <span className="asr-model-title">🎯 高準度語音模型已啟用</span>
+                  <button
+                    className="asr-model-btn"
+                    onClick={handleDeleteAsrModel}
+                    disabled={asrBusy}
+                  >
+                    移除（釋放 {asrStatus.sizeMb}MB）
+                  </button>
+                </div>
+                <p className="asr-model-hint">
+                  中文逐字稿會自動改用此模型（自動加標點、準度較好）
+                </p>
+              </>
+            ) : (
+              <>
+                <div className="asr-model-row">
+                  <span className="asr-model-title">🎯 高準度離線語音模型</span>
+                  <button
+                    className="asr-model-btn primary"
+                    onClick={handleDownloadAsrModel}
+                    disabled={asrBusy}
+                  >
+                    {asrBusy
+                      ? `下載中 ${asrProgress === null ? '…' : `${asrProgress}%`}`
+                      : '下載（約 240MB）'}
+                  </button>
+                </div>
+                <p className="asr-model-hint">
+                  選配：中文（及日/韓/英/粵）辨識品質明顯較好、自動加標點。下載一次即可離線使用；不下載也能用系統語音輸入。
+                </p>
+              </>
+            )}
+          </div>
+
           {textError && <p className="error">{textError}</p>}
 
           <div className="result">
@@ -514,7 +611,7 @@ function App() {
           翻譯與辨識完全在你的裝置上執行（ML Kit + OpenCC）。
           唯一的網路行為：首次使用的語言包下載。
         </p>
-        <p className="build-tag">build v20 · 聽寫診斷版（2026-10-29）</p>
+        <p className="build-tag">build v21 · 聽寫診斷版（2026-10-29）</p>
       </footer>
     </div>
   )

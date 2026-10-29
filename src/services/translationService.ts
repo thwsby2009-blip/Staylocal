@@ -42,6 +42,11 @@ export async function translateText(
   return output
 }
 
+/** 簡體 → 台灣繁體（含詞彙轉換）：離線語音模型輸出簡體時使用 */
+export function toTaiwanTraditional(text: string): string {
+  return getTwConverter()(text)
+}
+
 /** 僅供測試：重置 converter 快取 */
 export function resetConverterCacheForTests(): void {
   twConverter = null

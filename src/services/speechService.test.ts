@@ -9,6 +9,10 @@ import {
   checkSpeechAvailability,
   toLangList,
   formatSupportInfo,
+  senseVoiceLangFor,
+  getAsrModelStatus,
+  downloadAsrModel,
+  deleteAsrModel,
 } from './speechService'
 
 // Mock 自製 Capacitor 插件（原生橋接在單元測試不存在）
@@ -20,6 +24,10 @@ const mockCheckAvailability = vi.hoisted(() => vi.fn())
 const mockCheckSupport = vi.hoisted(() => vi.fn())
 const mockDownloadOnDeviceModel = vi.hoisted(() => vi.fn())
 const mockAddListener = vi.hoisted(() => vi.fn())
+const mockAsrModelStatus = vi.hoisted(() => vi.fn())
+const mockDownloadAsrModel = vi.hoisted(() => vi.fn())
+const mockDeleteAsrModel = vi.hoisted(() => vi.fn())
+const mockTranscribeWithSenseVoice = vi.hoisted(() => vi.fn())
 
 vi.mock('@capacitor/core', () => ({
   registerPlugin: () => ({
@@ -29,6 +37,10 @@ vi.mock('@capacitor/core', () => ({
     startRecording: mockStartRecording,
     stopRecording: mockStopRecording,
     transcribeFile: mockTranscribeFile,
+    asrModelStatus: mockAsrModelStatus,
+    downloadAsrModel: mockDownloadAsrModel,
+    deleteAsrModel: mockDeleteAsrModel,
+    transcribeWithSenseVoice: mockTranscribeWithSenseVoice,
     addListener: mockAddListener,
     removeAllListeners: vi.fn(),
   }),
@@ -88,7 +100,7 @@ describe('speechService（批次：先錄音、停止後轉逐字稿）', () => 
       path: '/tmp/a.wav',
       language: 'en-US',
     })
-    expect(res).toEqual({ text: 'hello world', seconds: 2 })
+    expect(res).toEqual({ text: 'hello world', seconds: 2, engine: 'system' })
     expect(isRecordingNow()).toBe(false)
   })
 
@@ -145,6 +157,82 @@ describe('speechService（批次：先錄音、停止後轉逐字稿）', () => 
     expect(toLangList('[en-US, ja-JP]')).toEqual(['en-US', 'ja-JP'])
     expect(toLangList('[]')).toEqual([])
     expect(toLangList(undefined)).toEqual([])
+  })
+
+  it('senseVoiceLangFor：支援的語言回模型語言碼，其餘 null', () => {
+    expect(senseVoiceLangFor('zh')).toBe('zh')
+    expect(senseVoiceLangFor('en')).toBe('en')
+    expect(senseVoiceLangFor('yue')).toBe('yue')
+    expect(senseVoiceLangFor('fr')).toBeNull()
+  })
+
+  it('高準度模型已安裝：優先走 SenseVoice（回 engine=sensevoice）', async () => {
+    mockAsrModelStatus.mockResolvedValue({ installed: true, modelBytes: 239233841, sizeMb: 228, dir: '/d' })
+    mockTranscribeWithSenseVoice.mockResolvedValue({ text: '你好世界' })
+    await startRecording()
+    const res = await stopRecordingAndTranscribe('zh', { preferSenseVoice: true })
+    expect(mockTranscribeWithSenseVoice).toHaveBeenCalledWith({
+      path: '/tmp/a.wav',
+      language: 'zh',
+    })
+    expect(mockTranscribeFile).not.toHaveBeenCalled()
+    expect(res).toEqual({ text: '你好世界', seconds: 2, engine: 'sensevoice' })
+  })
+
+  it('高準度模型推論失敗：退回系統引擎（不讓使用者卡住）', async () => {
+    mockAsrModelStatus.mockResolvedValue({ installed: true, modelBytes: 1, sizeMb: 1, dir: '/d' })
+    mockTranscribeWithSenseVoice.mockRejectedValueOnce(new Error('模型載入失敗'))
+    await startRecording()
+    const res = await stopRecordingAndTranscribe('zh', { preferSenseVoice: true })
+    expect(mockTranscribeFile).toHaveBeenCalledWith({
+      path: '/tmp/a.wav',
+      language: 'cmn-Hant-TW',
+    })
+    expect(res.engine).toBe('system')
+  })
+
+  it('未安裝模型或未指定偏好：仍走系統引擎', async () => {
+    mockAsrModelStatus.mockResolvedValue({ installed: false, modelBytes: 0, sizeMb: 0, dir: '/d' })
+    await startRecording()
+    const res = await stopRecordingAndTranscribe('zh', { preferSenseVoice: true })
+    expect(mockTranscribeWithSenseVoice).not.toHaveBeenCalled()
+    expect(res.engine).toBe('system')
+  })
+
+  it('getAsrModelStatus：正規化原生回傳；原生丟錯回 null', async () => {
+    mockAsrModelStatus.mockResolvedValueOnce({ installed: true, modelBytes: '123', sizeMb: '0', dir: '/d' })
+    expect(await getAsrModelStatus()).toEqual({
+      installed: true,
+      modelBytes: 123,
+      sizeMb: 0,
+      dir: '/d',
+    })
+    mockAsrModelStatus.mockRejectedValueOnce(new Error('not implemented'))
+    expect(await getAsrModelStatus()).toBeNull()
+  })
+
+  it('downloadAsrModel：轉發下載進度事件、回傳大小', async () => {
+    let progressHandler: ((d: Record<string, unknown>) => void) | null = null
+    mockAddListener.mockImplementation(async (evt, fn) => {
+      if (evt === 'partialTranscript') partialHandler = fn
+      if (evt === 'asrDownloadProgress') progressHandler = fn
+      return { remove: vi.fn() }
+    })
+    mockDownloadAsrModel.mockImplementation(async () => {
+      progressHandler?.({ file: 'model.int8.onnx', received: 50, total: 100, percent: 50 })
+      return { installed: true, sizeMb: 228 }
+    })
+    const seen: number[] = []
+    const mb = await downloadAsrModel((p) => seen.push(p.percent))
+    expect(seen).toEqual([50])
+    expect(mb).toBe(228)
+  })
+
+  it('deleteAsrModel：原生丟錯回 false', async () => {
+    mockDeleteAsrModel.mockResolvedValueOnce({ deleted: true })
+    expect(await deleteAsrModel()).toBe(true)
+    mockDeleteAsrModel.mockRejectedValueOnce(new Error('boom'))
+    expect(await deleteAsrModel()).toBe(false)
   })
 
   it('formatSupportInfo：列出已安裝與可下載', () => {

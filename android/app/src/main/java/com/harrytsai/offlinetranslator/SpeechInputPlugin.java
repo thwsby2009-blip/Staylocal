@@ -12,6 +12,13 @@ import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.provider.Settings;
 import android.speech.RecognitionListener;
+
+import com.k2fsa.sherpa.onnx.FeatureConfig;
+import com.k2fsa.sherpa.onnx.OfflineModelConfig;
+import com.k2fsa.sherpa.onnx.OfflineRecognizer;
+import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig;
+import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig;
+import com.k2fsa.sherpa.onnx.OfflineStream;
 import android.speech.RecognitionSupport;
 import android.speech.RecognitionSupportCallback;
 import android.speech.RecognizerIntent;
@@ -347,6 +354,248 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
             recording = false;
             call.reject("錄音啟動失敗：" + e.getMessage());
         }
+    }
+
+    // ===== SenseVoice（sherpa-onnx）高準度離線模型：選用加強 =====
+    // Google 端側引擎品質有限且無標點；安裝 SenseVoice 後改用 sherpa-onnx 推論。
+    // 模型（239MB）首次使用時下載，不進 APK、不進版控（授權：FunASR Model License v1.1）。
+
+    private static final String SV_MODEL_URL = "https://huggingface.co/csukuangfj/"
+            + "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/model.int8.onnx";
+    private static final String SV_TOKENS_URL = "https://huggingface.co/csukuangfj/"
+            + "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt";
+    private static final int SV_SEGMENT_SECONDS = 25;
+
+    private OfflineRecognizer svRecognizer;
+    private String svRecognizerKey = "";
+    private volatile boolean svDownloading = false;
+
+    private File svDir() {
+        return new File(getContext().getFilesDir(), "sense-voice");
+    }
+
+    private File svModelFile() {
+        return new File(svDir(), "model.int8.onnx");
+    }
+
+    private File svTokensFile() {
+        return new File(svDir(), "tokens.txt");
+    }
+
+    /** 模型是否已安裝（檔案大小做基本驗證，避免下載中斷的半成品） */
+    @PluginMethod
+    public void asrModelStatus(PluginCall call) {
+        File m = svModelFile();
+        File t = svTokensFile();
+        boolean installed = m.exists() && m.length() > 1_000_000
+                && t.exists() && t.length() > 1000;
+        JSObject ret = new JSObject();
+        ret.put("installed", installed);
+        ret.put("modelBytes", m.exists() ? m.length() : 0);
+        ret.put("sizeMb", Math.round((m.exists() ? m.length() : 0) / 1048576.0));
+        ret.put("dir", svDir().getAbsolutePath());
+        call.resolve(ret);
+    }
+
+    /** 下載模型（背景執行；進度走 asrDownloadProgress 事件） */
+    @PluginMethod
+    public void downloadAsrModel(PluginCall call) {
+        if (svDownloading) {
+            call.reject("模型下載中，請稍候");
+            return;
+        }
+        final String modelUrl = call.getString("modelUrl", SV_MODEL_URL);
+        final String tokensUrl = call.getString("tokensUrl", SV_TOKENS_URL);
+        svDownloading = true;
+        new Thread(() -> {
+            try {
+                File dir = svDir();
+                if (!dir.exists() && !dir.mkdirs()) {
+                    throw new Exception("無法建立模型目錄");
+                }
+                File modelPart = new File(dir, "model.int8.onnx.part");
+                File tokensPart = new File(dir, "tokens.txt.part");
+                downloadTo(modelUrl, modelPart, "model.int8.onnx");
+                downloadTo(tokensUrl, tokensPart, "tokens.txt");
+                // 先存成 .part，兩個檔都完整才轉正式檔名（避免半成品被當成已安裝）
+                File model = svModelFile();
+                File tokens = svTokensFile();
+                if (model.exists()) model.delete();
+                if (tokens.exists()) tokens.delete();
+                if (!modelPart.renameTo(model)) throw new Exception("模型檔更名失敗");
+                if (!tokensPart.renameTo(tokens)) throw new Exception("詞表檔更名失敗");
+                svDownloading = false;
+                JSObject ret = new JSObject();
+                ret.put("installed", true);
+                ret.put("sizeMb", Math.round(model.length() / 1048576.0));
+                call.resolve(ret);
+            } catch (Exception e) {
+                svDownloading = false;
+                call.reject("模型下載失敗：" + e.getMessage());
+            }
+        }).start();
+    }
+
+    private void downloadTo(String url, File dest, String label) throws Exception {
+        java.net.HttpURLConnection conn =
+                (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+        conn.setConnectTimeout(15000);
+        conn.setReadTimeout(30000);
+        conn.setInstanceFollowRedirects(true);
+        conn.connect();
+        int code = conn.getResponseCode();
+        if (code != 200) throw new Exception("HTTP " + code + "（" + label + "）");
+        long total = conn.getContentLengthLong();
+        java.io.InputStream in = conn.getInputStream();
+        FileOutputStream out = new FileOutputStream(dest);
+        byte[] buf = new byte[64 * 1024];
+        long got = 0;
+        long lastEmit = 0;
+        int n;
+        while ((n = in.read(buf)) > 0) {
+            out.write(buf, 0, n);
+            got += n;
+            long now = System.currentTimeMillis();
+            if (now - lastEmit > 400) {
+                lastEmit = now;
+                JSObject p = new JSObject();
+                p.put("file", label);
+                p.put("received", got);
+                p.put("total", total);
+                p.put("percent", total > 0 ? (int) Math.round(got * 100.0 / total) : -1);
+                notifyListeners("asrDownloadProgress", p);
+            }
+        }
+        out.flush();
+        out.close();
+        in.close();
+        if (total > 0 && got != total) {
+            throw new Exception("下載不完整（" + got + "/" + total + "）");
+        }
+    }
+
+    /** 刪除模型（釋放空間） */
+    @PluginMethod
+    public void deleteAsrModel(PluginCall call) {
+        releaseSenseVoice();
+        File m = svModelFile();
+        File t = svTokensFile();
+        boolean a = !m.exists() || m.delete();
+        boolean b = !t.exists() || t.delete();
+        JSObject ret = new JSObject();
+        ret.put("deleted", a && b);
+        call.resolve(ret);
+    }
+
+    /**
+     * 用 SenseVoice 轉寫整段錄音（離線，含標點）。
+     * 長錄音切 SV_SEGMENT_SECONDS 秒逐段推論再接起來（非自迴歸模型分段較穩、記憶體可控）。
+     * 進度走 partialTranscript 事件。
+     */
+    @PluginMethod
+    public void transcribeWithSenseVoice(PluginCall call) {
+        final String path = call.getString("path", "");
+        final String language = call.getString("language", "zh");
+        if (path == null || path.isEmpty()) {
+            call.reject("缺少音檔路徑");
+            return;
+        }
+        if (!svModelFile().exists() || !svTokensFile().exists()) {
+            call.reject("尚未下載高準度語音模型");
+            return;
+        }
+        new Thread(() -> {
+            try {
+                ensureSenseVoice(language);
+                float[] samples = readWavSamples(new File(path));
+                if (samples.length == 0) {
+                    throw new Exception("音檔是空的（可能沒收到聲音）");
+                }
+                final int segSamples = SV_SEGMENT_SECONDS * SAMPLE_RATE;
+                StringBuilder sb = new StringBuilder();
+                for (int off = 0; off < samples.length; off += segSamples) {
+                    int len = Math.min(segSamples, samples.length - off);
+                    float[] chunk = java.util.Arrays.copyOfRange(samples, off, off + len);
+                    OfflineStream stream = svRecognizer.createStream();
+                    stream.acceptWaveform(chunk, SAMPLE_RATE);
+                    svRecognizer.decode(stream);
+                    String text = svRecognizer.getResult(stream).getText();
+                    stream.release();
+                    if (text != null && !text.trim().isEmpty()) {
+                        if (sb.length() > 0) sb.append('\n');
+                        sb.append(text.trim());
+                    }
+                    JSObject p = new JSObject();
+                    p.put("text", sb.toString());
+                    notifyListeners("partialTranscript", p);
+                }
+                JSObject ret = new JSObject();
+                ret.put("text", sb.toString());
+                call.resolve(ret);
+            } catch (Exception e) {
+                call.reject("語音模型轉寫失敗：" + e.getMessage());
+            }
+        }).start();
+    }
+
+    /** 載入（或重用）SenseVoice 推論器；語言不同或模型換了才重建 */
+    private void ensureSenseVoice(String language) throws Exception {
+        File m = svModelFile();
+        File t = svTokensFile();
+        String key = m.getAbsolutePath() + "|" + m.length() + "|" + language;
+        if (svRecognizer != null && key.equals(svRecognizerKey)) return;
+        releaseSenseVoice();
+
+        FeatureConfig feat = new FeatureConfig();
+        feat.setSampleRate(SAMPLE_RATE);
+        feat.setFeatureDim(80);
+
+        OfflineSenseVoiceModelConfig sv = new OfflineSenseVoiceModelConfig();
+        sv.setModel(m.getAbsolutePath());
+        sv.setLanguage(language);
+        sv.setUseInverseTextNormalization(true); // 口語數字轉阿拉伯數字等
+
+        OfflineModelConfig mc = new OfflineModelConfig();
+        mc.setSenseVoice(sv);
+        mc.setTokens(t.getAbsolutePath());
+        mc.setNumThreads(2);
+        mc.setModelType("sense-voice");
+        mc.setProvider("cpu");
+        mc.setDebug(false);
+
+        OfflineRecognizerConfig cfg = new OfflineRecognizerConfig();
+        cfg.setFeatConfig(feat);
+        cfg.setModelConfig(mc);
+        svRecognizer = new OfflineRecognizer(getContext().getAssets(), cfg);
+        svRecognizerKey = key;
+    }
+
+    private void releaseSenseVoice() {
+        if (svRecognizer != null) {
+            try {
+                svRecognizer.release();
+            } catch (Exception ignored) {
+            }
+        }
+        svRecognizer = null;
+        svRecognizerKey = "";
+    }
+
+    /** 讀我們自己寫的 44-byte 表頭 WAV → 16kHz float 樣本 */
+    private float[] readWavSamples(File f) throws Exception {
+        byte[] all = new byte[(int) f.length()];
+        java.io.FileInputStream in = new java.io.FileInputStream(f);
+        int read = readFully(in, all, all.length);
+        in.close();
+        if (read <= 44) return new float[0];
+        int n = (read - 44) / 2;
+        float[] out = new float[n];
+        for (int i = 0; i < n; i++) {
+            int lo = all[44 + 2 * i] & 0xff;
+            int hi = all[44 + 2 * i + 1];
+            out[i] = (short) ((hi << 8) | lo) / 32768.0f;
+        }
+        return out;
     }
 
     /** 選收音來源：優先「原始未處理」收音，裝置不支援才退回 MIC */

@@ -12,6 +12,7 @@ A fully offline mobile translation app. Photo or text — everything runs on you
 - **🗺️ 收藏夾**：照片與譯文一起保存，之後可翻看、刪除
 - **⌨️ 文字翻譯**：51 種語言互譯，中文輸出自動轉台灣用字繁體（含詞彙轉換，如 software → 軟體）
 - **📦 語言包管理**：預先下載旅遊目的地語言包（各約 30MB），刪除釋放空間
+- **🎤 語音轉逐字稿**：錄音後端側轉文字（全離線），逐字稿可直接續接翻譯；中文／日／韓／英／粵另可選配**高準度模型**（SenseVoice，約 240MB，首次使用時下載，自動加標點）
 
 ## 截圖 / Screenshots
 
@@ -31,6 +32,8 @@ A fully offline mobile translation app. Photo or text — everything runs on you
 拍照/選圖 ──→ ML Kit Text Recognition v2（端側 OCR，模型綁 APK）
                 │
 輸入文字 ───────┤
+                │
+錄音（16kHz WAV）→ 端側語音辨識 ┤（系統 On-Device 引擎；已裝 SenseVoice 時改用 sherpa-onnx）
                 ▼
         ML Kit Translation（端側翻譯，Google Translate 離線同款模型）
                 │
@@ -39,6 +42,8 @@ A fully offline mobile translation app. Photo or text — everything runs on you
 ```
 
 - 所有辨識與翻譯**完全在裝置上執行**，飛航模式可用
+- 語音走批次架構：`AudioRecord`（**原始未處理收音**，避免 Google 專屬降噪鏈讓其他模型聽不懂）錄成 WAV，停止後才把音檔餵給辨識器
+- 選配的 SenseVoice 由 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 在裝置端推論；模型檔在使用者裝置上首次下載，**不隨 APK 散布**
 - 唯一的網路行為：首次使用時從 Google 伺服器下載翻譯語言包（OCR 模型直接綁在 APK 內，免下載）
 - 照片存在 app 私有目錄，卡片 metadata 存 localStorage，不出裝置
 
@@ -48,7 +53,8 @@ A fully offline mobile translation app. Photo or text — everything runs on you
 - [@capacitor-mlkit/translation](https://github.com/capawesome-team/capacitor-mlkit)（ML Kit on-device translation）
 - [@capacitor-mlkit/text-recognition](https://github.com/capawesome-team/capacitor-mlkit)（ML Kit Text Recognition v2）
 - [opencc-js](https://github.com/nk2028/opencc-js)（s2twp：簡體→台灣繁體＋詞彙轉換）
-- Vitest（35 個單元測試）
+- [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)（離線語音辨識推論，Apache-2.0；AAR 不進版控，需先跑 `bash scripts/fetch-deps.sh`）
+- Vitest（55 個單元測試）
 
 ## 已知限制 / Known Limitations
 
@@ -56,6 +62,7 @@ A fully offline mobile translation app. Photo or text — everything runs on you
 - **離線翻譯品質**：等同 Google Translate 離線模式，長句通順度低於雲端 LLM 翻譯
 - **OCR script 需選對來源語言**：ML Kit 按文字系統（Latin/中文/日文/韓文）分模型，拍照前請先選對來源語言
 - **中文輸出為簡體**：ML Kit 限制，本 app 已用 OpenCC 自動轉台灣繁體
+- **系統端側語音辨識品質有限**：內建模型偏向短句／指令、無標點、長段口語易漏字；要好的中文逐字稿請下載選配的 SenseVoice 模型
 
 ## 開發 / Development
 
@@ -63,6 +70,7 @@ A fully offline mobile translation app. Photo or text — everything runs on you
 npm install
 npx cap init   # 首次
 npx cap add android
+bash scripts/fetch-deps.sh   # 原生相依（sherpa-onnx AAR，49MB，不進版控）
 npm run build
 npx cap sync android
 
@@ -83,3 +91,5 @@ gradlew.bat assembleDebug
 執行時期使用的第三方元件：
 - ML Kit（Google，[ML Kit Terms](https://developers.google.com/ml-kit/terms)）
 - OpenCC 詞庫（Apache-2.0 / CC BY-SA 3.0，見 [opencc-js](https://github.com/nk2028/opencc-js)）
+- [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 執行期（Apache-2.0，以 AAR 形式連結）
+- SenseVoice 模型權重（[FunASR Model License v1.1](https://github.com/modelscope/FunASR/blob/main/MODEL_LICENSE)）：由使用者在裝置上自行下載，本專案不散布模型檔
