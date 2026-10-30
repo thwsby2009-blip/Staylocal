@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.harrytsai.offlinetranslator',
-  appName: 'Offline Translator',
+  appName: 'Staylocal',
   webDir: 'dist'
 };
 

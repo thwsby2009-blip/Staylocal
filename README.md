@@ -1,10 +1,12 @@
-# 離線翻譯 / Offline Translator
+# Staylocal
+
+> App 名稱（中文）：**旅行翻譯小助手**
 
 完全離線的手機翻譯 app：拍照或輸入文字，翻譯全部在你的裝置上完成。零 API key、零帳號，你的照片、文字與錄音都不離開裝置（**可自行查核**，見[隱私與網路行為](#隱私與網路行為--privacy--network)）。
 
 **應用場景以旅遊為主**——菜單、路標、看板即拍即譯，譯文與照片一起收藏；任何無網路的場合（飛航、國外無漫遊、機密環境）同樣適用。UI 因此採旅遊相簿風格。
 
-A fully offline mobile translation app. Photo or text — everything runs on your device. No API keys, no accounts, and your photos, text and recordings never leave the device (independently verifiable — see Privacy & Network). Travel is its primary use case (menus, signs, notices saved as a photo deck), but it works anywhere without a network.
+**Staylocal** (Chinese app name: 旅行翻譯小助手) is a fully offline mobile translation app. Photo or text — everything runs on your device. No API keys, no accounts, and your photos, text and recordings never leave the device (independently verifiable — see Privacy & Network). Travel is its primary use case (menus, signs, notices saved as a photo deck), but it works anywhere without a network.
 
 ## 功能 / Features
 
