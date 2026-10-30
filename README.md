@@ -88,7 +88,7 @@ A fully offline mobile translation app. Photo or text — everything runs on you
 | └ 網頁資產＋資源（含 OpenCC 詞庫） | 8 MB | | — |
 | 系統最佳化產物（dexopt / odex） | 約 10-20 MB | 安裝後由 Android 生成 | — |
 | **高準度離線語音模型**（SenseVoice int8，選配） | **228 MiB（≈ 239 MB）** | 首次使用時下載 | ✅ App 內可刪除 |
-| **翻譯語言包**（每個語言） | **約 50 MB** | 首次使用該語言時下載 | ✅ App 內可刪除 |
+| **翻譯語言包**（每個語言） | **約 40-60 MB**（實測 en_ja 61／en_ko 50／en_zh 43）| 首次使用該語言時下載 | ✅ App 內可刪除 |
 | OCR 模型 | 已含在 APK（10.6 MB） | — | — |
 
 實機總佔用範例：
