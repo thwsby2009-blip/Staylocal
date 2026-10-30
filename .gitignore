@@ -29,3 +29,14 @@ android/app/libs/*.aar
 # 測試錄音檔（含個人語音，不進版控）
 screenshots/*.wav
 android/app/build/outputs
+
+# 簽章憑證／金鑰（絕不進版控）
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pepk
+keystore.properties
+*.keystore.bak
+# Android Studio 精靈若把 keystore 存成無副檔名的名字
+/offline-translator
