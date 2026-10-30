@@ -1,10 +1,10 @@
 # 離線翻譯 / Offline Translator
 
-完全離線的手機翻譯 app：拍照或輸入文字，翻譯全部在你的裝置上完成。零 API key、零帳號、零資料上傳。
+完全離線的手機翻譯 app：拍照或輸入文字，翻譯全部在你的裝置上完成。零 API key、零帳號，你的照片、文字與錄音都不離開裝置（**可自行查核**，見[隱私與網路行為](#隱私與網路行為--privacy--network)）。
 
 **應用場景以旅遊為主**——菜單、路標、看板即拍即譯，譯文與照片一起收藏；任何無網路的場合（飛航、國外無漫遊、機密環境）同樣適用。UI 因此採旅遊相簿風格。
 
-A fully offline mobile translation app. Photo or text — everything runs on your device. No API keys, no accounts, no data uploaded. Travel is its primary use case (menus, signs, notices saved as a photo deck), but it works anywhere without a network.
+A fully offline mobile translation app. Photo or text — everything runs on your device. No API keys, no accounts, and your photos, text and recordings never leave the device (independently verifiable — see Privacy & Network). Travel is its primary use case (menus, signs, notices saved as a photo deck), but it works anywhere without a network.
 
 ## 功能 / Features
 
@@ -69,7 +69,7 @@ A fully offline mobile translation app. Photo or text — everything runs on you
 - 語音走**批次架構**：先錄成 WAV，停止後才把音檔餵給辨識器（連續串流在舊機不可靠）；長錄音自動切段（系統引擎 12 秒、SenseVoice 25 秒）逐段轉寫再接起來
 - 收音刻意使用 **`UNPROCESSED` 原始音源**：`VOICE_RECOGNITION` 會被套上 Google 專屬降噪鏈，那條處理過的聲音只有 Google 自家引擎聽得懂，第三方離線模型（SenseVoice／Paraformer）會聽成雜訊
 - 高準度模型推論失敗或未安裝時，**自動退回系統端側引擎**（不會讓使用者卡住）
-- 唯一的網路行為：首次使用時下載翻譯語言包與（選配的）語音模型；OCR 模型隨 APK 內附，免下載
+- 唯一的網路行為：首次使用時下載翻譯語言包與（選配的）語音模型；OCR 模型隨 APK 內附，免下載（ML Kit 預設的**使用統計遙測已移除**，見[隱私與網路行為](#隱私與網路行為--privacy--network)）
 - 照片存在 app 私有目錄，卡片 metadata 存 localStorage，音訊與文字都不出裝置
 
 ## 安裝空間 / Storage footprint
@@ -102,6 +102,38 @@ A fully offline mobile translation app. Photo or text — everything runs on you
 兩點補充：
 - **不下載高準度語音模型也能用語音**（退回系統端側引擎，零額外下載）——把 228 MiB 留給需要的使用者
 - APK 內約 30 MB 是 sherpa-onnx + onnxruntime；若日後以體積優先，可改成 Play Feature Delivery 動態模組或另出「輕量版」口味
+
+## 隱私與網路行為 / Privacy & Network
+
+**不上傳（全部在裝置上處理）**：照片、OCR 文字、翻譯文字、錄音、逐字稿、收藏卡片資料。
+
+**會連線的只有下載模型／語言包**（不上傳任何內容）：
+
+| 連線對象 | 時機 | 必要性 |
+|---|---|---|
+| Google（ML Kit 翻譯語言包）| 首次使用某語言時下載 | 該語言要用才需要（約 50 MB／語言）|
+| HuggingFace（SenseVoice 語音模型）| 選配高準度語音首次使用時下載 | 可不下載，改用系統語音引擎 |
+| ~~Google（ML Kit 使用統計遙測）~~ | ~~App 啟動後背景~~ | **已移除**，見下 |
+
+**我們額外移除了 ML Kit 的遙測**：ML Kit 的推論雖然完全在裝置端，但 SDK 預設會把「使用統計」（API 名稱、輸入輸出大小、延遲、裝置／App 資訊、per-install 識別碼）上報到 `firebaselogging.googleapis.com`。本專案在 `AndroidManifest.xml` 以 manifest merge 的 `tools:node="remove"` 移除 `com.google.android.datatransport` 的三個元件，讓遙測管線根本不會初始化（理由與細節寫在該檔註解）。
+
+**你可以自己查核，不必相信我們**：
+
+```bash
+# 1) OCR 模型確實內附（不是執行期下載）
+unzip -l android/app/build/outputs/apk/debug/app-debug.apk | grep mlkit-google-ocr-models | head
+
+# 2) 原始碼沒有任何上傳呼叫（唯一對外網址是模型／語言包下載）
+grep -rnoE "https?://[^\"']+|fetch\(|XMLHttpRequest" src/ android/app/src/main/java/
+
+# 3) 遙測元件已從最終 manifest 移除（以下指令應輸出 0）
+grep -c datatransport android/app/build/intermediates/merged_manifest/debug/*/AndroidManifest.xml
+
+# 4) App 只要求兩個權限：RECORD_AUDIO、INTERNET
+grep uses-permission android/app/src/main/AndroidManifest.xml
+```
+
+`INTERNET` 權限**只用於**上表的下載行為；飛航模式下所有辨識與翻譯照常運作（README 截圖即為飛航模式實測）。
 
 ## 技術棧 / Tech Stack
 
@@ -140,9 +172,15 @@ gradlew.bat assembleDebug
 - 需 Node 18+、Android SDK
 - 翻譯與 OCR 在瀏覽器（`npm run dev`）預覽時不可用，需實機或模擬器
 
+## 維護狀態 / Maintenance
+
+本專案為**個人專案**：不保證回應 issue 或 PR，也不保證功能請求的實作時程。你可以自由 fork、自行維護（MIT 授權允許）。已知限制見上一節；各項技術取捨的理由都寫在程式碼註解與本文件，方便你自行接手。
+
 ## 授權 / License
 
 程式碼：[MIT](LICENSE)
+
+**App 名稱與圖示不在 MIT 授權範圍內**：「旅行翻譯小助手 / Offline Translator」名稱與應用程式圖示（含 launcher icon）為作者保留（All rights reserved）。Fork 或再散布時請更名並更換圖示，以免與原版混淆。
 
 執行時期使用的第三方元件：
 - ML Kit（Google，[ML Kit Terms](https://developers.google.com/ml-kit/terms)）

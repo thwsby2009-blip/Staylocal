@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
@@ -35,6 +36,23 @@
             </intent-filter>
 
         </activity>
+
+        <!--
+          移除 ML Kit 透過 com.google.android.datatransport 注入的遙測元件。
+          ML Kit 的推論完全在裝置端，但 SDK 預設會把「使用統計」（API 名稱、輸入輸出大小、
+          延遲、裝置與 App 資訊、per-install 識別碼）上傳到 firebaselogging.googleapis.com。
+          內容不會上傳，但為了讓「不上傳」的承諾無條件成立，這裡在 manifest merge 階段
+          直接把遙測管線的三個元件移除（datatransport 不會初始化，就不會有任何上報）。
+        -->
+        <service
+            android:name="com.google.android.datatransport.runtime.backends.TransportBackendDiscovery"
+            tools:node="remove" />
+        <service
+            android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.JobInfoSchedulerService"
+            tools:node="remove" />
+        <receiver
+            android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.AlarmManagerSchedulerBroadcastReceiver"
+            tools:node="remove" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
