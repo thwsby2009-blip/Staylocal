@@ -22,6 +22,11 @@ export function isChinese(lang: string): boolean {
   return lang === Language.Chinese || lang.startsWith('zh')
 }
 
+/** 需要 CJK 空白清理的語言（日文／中文／粵語） */
+export function isCjkLang(lang: string): boolean {
+  return lang === 'ja' || lang.startsWith('zh') || lang === 'yue'
+}
+
 export async function translateText(
   text: string,
   sourceLanguage: string,
@@ -45,6 +50,20 @@ export async function translateText(
 /** 簡體 → 台灣繁體（含詞彙轉換）：離線語音模型輸出簡體時使用 */
 export function toTaiwanTraditional(text: string): string {
   return getTwConverter()(text)
+}
+
+/**
+ * 清理 CJK 語音辨識輸出：SenseVoice 的日中輸出會夾雜不自然的空格
+ * （詞間空白、甚至把詞切開，如「使わ な いから」）。日文與中文正常不這樣寫，
+ * 這種字串餵給翻譯模型會明顯拉低品質（時態、漏譯、直譯）。
+ * 只移除「非 ASCII 字元之間」的空白，不動拉丁字母（如 YouTube）周圍的空白。
+ */
+export function tidyCjk(text: string): string {
+  if (!text) return ''
+  return text
+    .replace(/([^\x00-\x7F])[ \t]+(?=[^\x00-\x7F])/g, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
 }
 
 /** 僅供測試：重置 converter 快取 */

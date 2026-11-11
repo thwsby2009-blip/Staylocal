@@ -4,6 +4,8 @@ import {
   translateText,
   toTaiwanTraditional,
   isChinese,
+  isCjkLang,
+  tidyCjk,
 } from './services/translationService'
 import {
   ensureModelsReady,
@@ -133,10 +135,12 @@ function App() {
     const segHandle = addLiveSegmentListener(async (seg) => {
       const { source: srcLang, target: tgtLang } = livePairRef.current
       const id = ++liveIdRef.current
+      // 日中粵：SenseVoice 輸出夾雜不自然空格（詞間、甚至切開的詞）→ 先清理再顯示與翻譯
+      const srcText = isCjkLang(srcLang) ? tidyCjk(seg.text) : seg.text
       setLiveRows((prev) => [
         {
           id,
-          src: seg.text,
+          src: srcText,
           dst: '',
           lang: seg.language,
           audioMs: seg.audioMs,
@@ -148,7 +152,7 @@ function App() {
       ])
       const t0 = performance.now()
       try {
-        const translated = await translateText(seg.text, srcLang, tgtLang)
+        const translated = await translateText(srcText, srcLang, tgtLang)
         const mtMs = Math.round(performance.now() - t0)
         setLiveRows((prev) =>
           prev.map((r) => (r.id === id ? { ...r, dst: translated, mtMs, pending: false } : r)),
@@ -346,6 +350,10 @@ function App() {
           preferSenseVoice: true,
         })
         let text = res.text.trim()
+        // SenseVoice 日中輸出夾雜不自然空格 → 先清理
+        if (text && res.engine === 'sensevoice' && isCjkLang(source)) {
+          text = tidyCjk(text)
+        }
         // 高準度模型的中文輸出為簡體 → 轉台灣繁體（沿用翻譯用的 OpenCC）
         if (text && res.engine === 'sensevoice' && isChinese(source)) {
           text = toTaiwanTraditional(text)
@@ -970,7 +978,7 @@ function App() {
           翻譯與辨識完全在你的裝置上執行（ML Kit + OpenCC）。
           唯一的網路行為：首次使用的語言包下載。
         </p>
-        <p className="build-tag">build v29 · 即時翻譯獨立頁（2026-11-10）</p>
+        <p className="build-tag">build v30 · 即時翻譯獨立頁（2026-11-11）</p>
       </footer>
     </div>
   )
