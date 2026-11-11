@@ -108,7 +108,6 @@ function App() {
     // 實測：base 相似度 0.64／small 0.78（同片對照），故預設 small
     () => (localStorage.getItem('ot_whisper_size') as WhisperSize) || 'small',
   )
-  // 事件回呼裡要用「當下的」語言對；用 ref 避免拿到過期的 state
   const livePairRef = useRef({ source, target })
   const liveIdRef = useRef(0)
 
@@ -154,6 +153,9 @@ function App() {
       try {
         const translated = await translateText(srcText, srcLang, tgtLang)
         const mtMs = Math.round(performance.now() - t0)
+        // 量測用：原文／譯文一起寫進 console（logcat 可見，tag=Capacitor/Console）
+        // 這樣事後可以直接從 log 拉出「原文＋譯文」對照，不必靠截圖
+        console.log(`[livePair] ${srcLang}>${tgtLang} src=${srcText} || dst=${translated}`)
         setLiveRows((prev) =>
           prev.map((r) => (r.id === id ? { ...r, dst: translated, mtMs, pending: false } : r)),
         )
@@ -978,7 +980,7 @@ function App() {
           翻譯與辨識完全在你的裝置上執行（ML Kit + OpenCC）。
           唯一的網路行為：首次使用的語言包下載。
         </p>
-        <p className="build-tag">build v30 · 即時翻譯獨立頁（2026-11-11）</p>
+        <p className="build-tag">build v33 · 即時翻譯獨立頁（2026-11-11）</p>
       </footer>
     </div>
   )

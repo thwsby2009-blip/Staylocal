@@ -27,6 +27,12 @@ export function isCjkLang(lang: string): boolean {
   return lang === 'ja' || lang.startsWith('zh') || lang === 'yue'
 }
 
+// 【已移除：經英文樞紐】曾做過「非英文語言對改走 X→en→Y」的開關，2026-11-11 實測後移除。
+// 證據：同一句原文（韓文），勾選（走樞紐，中間英文有記進 log）與不勾選的**中譯一字不差**，
+// 且中間英文本身也常是壞的（`이러니야 게도…` → "This is this, but in that I'm going to keep us now."）。
+// 結論：ML Kit 的非英文→中文本來就經英文，自己做樞紐只是多一次往返、結果不變。
+// 真正可用的是「目標直接設英文」（實測明顯比任何中文路徑好），要中文就必須換翻譯引擎（雲端）。
+
 export async function translateText(
   text: string,
   sourceLanguage: string,
