@@ -27,26 +27,55 @@ export function isCjkLang(lang: string): boolean {
   return lang === 'ja' || lang.startsWith('zh') || lang === 'yue'
 }
 
-// 【已移除：經英文樞紐】曾做過「非英文語言對改走 X→en→Y」的開關，2026-11-11 實測後移除。
-// 證據：同一句原文（韓文），勾選（走樞紐，中間英文有記進 log）與不勾選的**中譯一字不差**，
-// 且中間英文本身也常是壞的（`이러니야 게도…` → "This is this, but in that I'm going to keep us now."）。
-// 結論：ML Kit 的非英文→中文本來就經英文，自己做樞紐只是多一次往返、結果不變。
-// 真正可用的是「目標直接設英文」（實測明顯比任何中文路徑好），要中文就必須換翻譯引擎（雲端）。
+/**
+ * 非英文語言對固定「經英文中繼」：X → 英文 → Y（最終輸出仍是 Y，通常是中文）。
+ *
+ * 為什麼明示中繼（實測 ML Kit 內部本來就經英文、結果一字不差）：
+ * 使用者的需求是「日韓→英文→中文」——最終輸出中文，但**英文那一步要看得見**。
+ * 因為中繼英文往往是整條鏈裡最可信的一段（實測韓→英 明顯優於任何中文路徑），
+ * 中文讀不通時可以直接讀那一行英文，所以把英文透過 onIntermediate 交給 UI 顯示。
+ */
+export type TranslateOptions = {
+  /** 走英文中繼時，取得中間英文（供 UI 顯示） */
+  onIntermediate?: (english: string) => void
+}
+
+/** 是否走英文中繼：來源與目標都不是英文時 */
+export function shouldRelayViaEnglish(source: string, target: string): boolean {
+  return source !== Language.English && target !== Language.English
+}
 
 export async function translateText(
   text: string,
   sourceLanguage: string,
   targetLanguage: string,
+  options: TranslateOptions = {},
 ): Promise<string> {
   if (!text) return ''
 
-  const result = await Translation.translate({
-    text,
-    sourceLanguage: sourceLanguage as Language,
-    targetLanguage: targetLanguage as Language,
-  })
+  let output: string
+  if (shouldRelayViaEnglish(sourceLanguage, targetLanguage)) {
+    const viaEn = await Translation.translate({
+      text,
+      sourceLanguage: sourceLanguage as Language,
+      targetLanguage: Language.English,
+    })
+    options.onIntermediate?.(viaEn.text)
+    const result = await Translation.translate({
+      text: viaEn.text,
+      sourceLanguage: Language.English,
+      targetLanguage: targetLanguage as Language,
+    })
+    output = result.text
+  } else {
+    const result = await Translation.translate({
+      text,
+      sourceLanguage: sourceLanguage as Language,
+      targetLanguage: targetLanguage as Language,
+    })
+    output = result.text
+  }
 
-  let output = result.text
   if (isChinese(targetLanguage)) {
     output = getTwConverter()(output)
   }

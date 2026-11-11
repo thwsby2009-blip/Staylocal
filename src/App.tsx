@@ -6,6 +6,7 @@ import {
   isChinese,
   isCjkLang,
   tidyCjk,
+  shouldRelayViaEnglish,
 } from './services/translationService'
 import {
   ensureModelsReady,
@@ -49,11 +50,13 @@ import {
 
 type Tab = 'collection' | 'live' | 'text' | 'packs'
 
-/** 即時翻譯的一列字幕（原文＋譯文＋延遲） */
+/** 即時翻譯的一列字幕（原文＋中繼英文＋譯文＋延遲） */
 interface LiveRow {
   id: number
   src: string
   dst: string
+  /** 非英文語言對走英文中繼時的中間英文（顯示用） */
+  viaEn?: string
   lang: string
   audioMs: number
   asrMs: number
@@ -151,7 +154,11 @@ function App() {
       ])
       const t0 = performance.now()
       try {
-        const translated = await translateText(srcText, srcLang, tgtLang)
+        const translated = await translateText(srcText, srcLang, tgtLang, {
+          // 非英文語言對走英文中繼：把中間英文顯示在卡片上（中文讀不通時可直接讀英文）
+          onIntermediate: (en) =>
+            setLiveRows((prev) => prev.map((r) => (r.id === id ? { ...r, viaEn: en } : r))),
+        })
         const mtMs = Math.round(performance.now() - t0)
         // 量測用：原文／譯文一起寫進 console（logcat 可見，tag=Capacitor/Console）
         // 這樣事後可以直接從 log 拉出「原文＋譯文」對照，不必靠截圖
@@ -816,6 +823,13 @@ function App() {
             講完一句、停頓約半秒，該句的原文與譯文就會出現。辨識與翻譯全程在裝置上執行。
           </p>
 
+          {shouldRelayViaEnglish(source, target) && (
+            <p className="live-hint">
+              此語言對走「{languageName(source)} → 英文 → {languageName(target)}」中繼；
+              中間英文會顯示在卡片上（中文讀不通時可直接讀那行英文）。
+            </p>
+          )}
+
           {/* 模型卡常駐：已安裝時也要能切換尺寸／下載其他尺寸 */}
           <div className="asr-model-card">
               <div className="asr-model-row">
@@ -913,6 +927,7 @@ function App() {
               {liveRows.map((r) => (
                 <li key={r.id} className="live-item">
                   <p className="live-src">{r.src}</p>
+                  {r.viaEn && <p className="live-via">EN · {r.viaEn}</p>}
                   <p className="live-dst">
                     {r.error ? `⚠ ${r.error}` : r.pending ? '翻譯中…' : r.dst}
                   </p>
@@ -980,7 +995,7 @@ function App() {
           翻譯與辨識完全在你的裝置上執行（ML Kit + OpenCC）。
           唯一的網路行為：首次使用的語言包下載。
         </p>
-        <p className="build-tag">build v33 · 即時翻譯獨立頁（2026-11-11）</p>
+        <p className="build-tag">build v34 · 即時翻譯獨立頁（2026-11-11）</p>
       </footer>
     </div>
   )

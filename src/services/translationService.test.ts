@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { translateText, resetConverterCacheForTests } from './translationService'
+import {
+  translateText,
+  resetConverterCacheForTests,
+  shouldRelayViaEnglish,
+} from './translationService'
 
 // Mock Capacitor 插件層（原生橋接在單元測試不存在）
 vi.mock('@capacitor-mlkit/translation', () => ({
@@ -45,6 +49,34 @@ describe('translateText', () => {
     const result = await translateText('', 'en', 'zh')
     expect(result).toBe('')
     expect(mockTranslate).not.toHaveBeenCalled()
+  })
+
+  it('非英文語言對走英文中繼（X→en→Y），並回報中間英文給 UI', async () => {
+    mockTranslate.mockResolvedValueOnce({ text: 'MID_EN' })
+    mockTranslate.mockResolvedValueOnce({ text: '这个软件很好用' })
+    const seen: string[] = []
+    const result = await translateText('こんにちは', 'ja', 'zh', {
+      onIntermediate: (en) => seen.push(en),
+    })
+    expect(mockTranslate).toHaveBeenNthCalledWith(1, {
+      text: 'こんにちは',
+      sourceLanguage: 'ja',
+      targetLanguage: 'en',
+    })
+    expect(mockTranslate).toHaveBeenNthCalledWith(2, {
+      text: 'MID_EN',
+      sourceLanguage: 'en',
+      targetLanguage: 'zh',
+    })
+    expect(seen).toEqual(['MID_EN'])
+    expect(result).toBe('這個軟體很好用')
+  })
+
+  it('shouldRelayViaEnglish：任一邊是英文就直翻（不中繼）', () => {
+    expect(shouldRelayViaEnglish('ja', 'zh')).toBe(true)
+    expect(shouldRelayViaEnglish('ko', 'zh')).toBe(true)
+    expect(shouldRelayViaEnglish('ja', 'en')).toBe(false)
+    expect(shouldRelayViaEnglish('en', 'zh')).toBe(false)
   })
 
   it('插件拋錯時，錯誤向上傳播', async () => {
