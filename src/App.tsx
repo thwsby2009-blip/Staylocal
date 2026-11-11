@@ -995,7 +995,7 @@ function App() {
           翻譯與辨識完全在你的裝置上執行（ML Kit + OpenCC）。
           唯一的網路行為：首次使用的語言包下載。
         </p>
-        <p className="build-tag">build v34 · 即時翻譯獨立頁（2026-11-11）</p>
+        <p className="build-tag">build v35 · 即時翻譯獨立頁（2026-11-11）</p>
       </footer>
     </div>
   )

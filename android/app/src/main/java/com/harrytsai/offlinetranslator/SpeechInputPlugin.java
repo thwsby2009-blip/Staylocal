@@ -1541,22 +1541,27 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
 
     /**
      * 前級軟體 AGC：把輸入拉到模型舒服的音量（目標 RMS ≈ 0.07 ≈ -23dBFS）。
-     * 必須在 VAD 之前做——遠場小聲（實測 -56dBFS）若只靠後級增益，
-     * VAD 本身聽不到、模型也只拿到幾乎無聲的音訊，Whisper 會開始重複迴圈幻覺。
-     * 每 100ms 塊最多變化 1.5 倍，避免抽吸感與瞬間爆音。
+     * 必須在 VAD 之前做——遠場小聲（實測 -56～-61dBFS）若只靠後級增益，
+     * VAD 本身聽不到（起音偏晚 → 字首被吃掉）、模型也只拿到幾乎無聲的音訊，
+     * Whisper 會開始重複迴圈幻覺。
+     * 增益上限 150 倍、每 100ms 塊最多變化 1.5 倍（1 秒內可到 60 倍），避免抽吸感與瞬間爆音。
      */
     private float[] applyAgc(float[] chunk) {
         double rms = rmsOf(chunk);
         if (rms < 1e-5) return chunk;              // 全靜音不動（保留真正無聲，讓 VAD 判定）
+        // 上限 150 倍：實測遠場輸入只有 -61dBFS（RMS 0.0009），依目標 0.07 需要 ~80 倍，
+        // 舊上限 60 倍只能到 -25.6dBFS、且每段都頂在 60 倍（＝系統一直在增益不足狀態）。
+        // 增益不足時 VAD 起音會偏晚，實際症狀是「字首音節被吃掉」
+        // （實測：폭격 이후→경 이후、근데→그데、아이러니하게도→만니약）。
         float want = (float) (0.07 / rms);
-        if (want > 60f) want = 60f;
+        if (want > 150f) want = 150f;
         if (want < 0.5f) want = 0.5f;              // 太大聲可衰減，避免削波
         float next = liveGain;
         if (want > liveGain * 1.5f) next = liveGain * 1.5f;
         else if (want < liveGain / 1.5f) next = liveGain / 1.5f;
         else next = want;
         if (next < 0.5f) next = 0.5f;
-        if (next > 60f) next = 60f;
+        if (next > 150f) next = 150f;
         liveGain = next;
         float[] out = new float[chunk.length];
         for (int i = 0; i < chunk.length; i++) {
