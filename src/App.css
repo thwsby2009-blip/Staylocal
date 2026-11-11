@@ -65,9 +65,16 @@ h1 {
 
 .tab {
   flex: 1;
-  padding: 10px;
+  padding: 6px 4px;
   font-size: 15px;
   font-weight: 600;
+  line-height: 1.3;
+  /* 四字分頁（即時／翻譯）刻意斷成 2+2 兩行；min-height 讓單行分頁也等高居中 */
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
   color: var(--accent-dark);
   background: transparent;
   border: none;
@@ -297,11 +304,41 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  /* 即時頁可能同時有 2-3 顆下載鈕（語音模型／多語模型／句切模型） */
+  flex-wrap: wrap;
 }
 
 .asr-model-title {
   font-size: 14px;
   font-weight: 600;
+}
+
+/* 多語模型尺寸選擇（tiny / base / small） */
+.size-picker {
+  display: flex;
+  gap: 6px;
+}
+
+.size-btn {
+  padding: 6px 12px;
+  font-size: 13px;
+  border-radius: 8px;
+  border: 1px solid rgba(120, 90, 60, 0.35);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.size-btn.active {
+  background: #c8681f;
+  color: #fff;
+  border-color: transparent;
+  font-weight: 600;
+}
+
+.size-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .asr-model-btn {
@@ -490,4 +527,88 @@ footer p {
 .pack-download:disabled,
 .pack-remove:disabled {
   opacity: 0.5;
+}
+
+/* 即時翻譯頁 */
+.live-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.live-btn {
+  padding: 18px;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: 14px;
+  cursor: pointer;
+  box-shadow: 0 3px 12px rgba(224, 123, 57, 0.35);
+}
+
+.live-btn.on {
+  background: #d9534f;
+  animation: dictate-pulse 1.4s ease-in-out infinite;
+}
+
+.live-hint {
+  font-size: 12.5px;
+  color: var(--text-2);
+  line-height: 1.6;
+  margin: 0;
+  text-align: center;
+}
+
+.live-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.live-item {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  box-shadow: 0 2px 6px rgba(90, 60, 30, 0.06);
+}
+
+.live-src {
+  font-size: 14.5px;
+  color: var(--text-2);
+  line-height: 1.5;
+  margin: 0;
+  word-break: break-word;
+}
+
+.live-dst {
+  font-size: 17.5px;
+  line-height: 1.6;
+  margin: 4px 0 0;
+  word-break: break-word;
+  min-height: 24px;
+}
+
+.live-meta {
+  font-size: 11.5px;
+  color: var(--text-2);
+  margin: 6px 0 0;
+  letter-spacing: 0.3px;
+}
+
+.live-clear {
+  align-self: center;
+  padding: 8px 20px;
+  font-size: 13px;
+  color: var(--text-2);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
 }

@@ -63,8 +63,51 @@ export interface SpeechInputPlugin {
     path: string
     language: string
   }): Promise<{ text: string }>
+  /** 即時翻譯所需模型狀態（VAD 句切 ＋ SenseVoice ＋ Whisper 多語各尺寸） */
+  liveModelStatus(): Promise<{
+    vadInstalled: boolean
+    asrInstalled: boolean
+    whisperInstalled: Record<string, boolean>
+    whisperAnyInstalled: boolean
+    vadBytes: number
+    dir: string
+  }>
+  /** 下載 VAD 句切模型（約 2MB） */
+  downloadVadModel(options: Record<string, never>): Promise<{
+    installed: boolean
+    sizeMb: number
+  }>
+  /** 多語模型（Whisper，尺寸 tiny/base/small）狀態 */
+  whisperModelStatus(): Promise<{
+    installed: Record<string, boolean>
+    sizeMb: Record<string, number>
+    anyInstalled: boolean
+  }>
+  /** 下載指定尺寸的多語模型（非中英日韓粵的語言需要） */
+  downloadWhisperModel(options: { size: string }): Promise<{
+    installed: boolean
+    size: string
+    sizeMb: number
+  }>
+  /** 刪除多語模型（帶 size 刪該尺寸，不帶全刪） */
+  deleteWhisperModel(options: { size?: string }): Promise<{ deleted: boolean }>
+  /** 開始即時翻譯（連續收音；每句走 liveSegment 事件） */
+  startLiveTranslation(options: {
+    language: string
+    whisperSize?: string
+  }): Promise<{
+    started: boolean
+    language: string
+    audioSource: number
+  }>
+  /** 停止即時翻譯（會把最後一句收尾送出） */
+  stopLiveTranslation(): Promise<{ stopped: boolean }>
   addListener(
-    eventName: 'partialTranscript' | 'asrDownloadProgress',
+    eventName:
+      | 'partialTranscript'
+      | 'asrDownloadProgress'
+      | 'liveSegment'
+      | 'liveStatus',
     listenerFunc: (data: Record<string, unknown>) => void,
   ): Promise<PluginListenerHandle> & PluginListenerHandle
   removeAllListeners(): Promise<void>
@@ -385,4 +428,168 @@ export async function deleteAsrModel(): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+// ===== 即時翻譯（連續收音 → VAD 句切 → 逐句辨識 → ML Kit 逐句翻譯）=====
+// 與批次聽寫共用同一顆 SenseVoice 模型；差別在句界由 Silero VAD 決定，
+// 使用者不必按停止，講完一句（停頓約 0.5 秒）就出一句。
+
+export interface LiveModelStatus {
+  vadInstalled: boolean
+  asrInstalled: boolean
+  /** 各尺寸多語模型是否已安裝，例如 {tiny:true, base:false, small:false} */
+  whisperInstalled: Record<string, boolean>
+  whisperAnyInstalled: boolean
+  vadBytes: number
+  dir: string
+}
+
+/** 多語模型尺寸選項（與原生端 WHISPER_SIZES 對應） */
+export const WHISPER_SIZES = ['tiny', 'base', 'small'] as const
+export type WhisperSize = (typeof WHISPER_SIZES)[number]
+
+export const WHISPER_SIZE_LABEL: Record<WhisperSize, string> = {
+  tiny: 'tiny（快，約 104MB，品質差）',
+  base: 'base（折衷，約 161MB）',
+  small: 'small（較準，約 375MB，較慢）',
+}
+
+/** Whisper 多語模型狀態（各尺寸） */
+export interface WhisperModelStatus {
+  installed: Record<string, boolean>
+  sizeMb: Record<string, number>
+  anyInstalled: boolean
+}
+
+/**
+ * 即時翻譯用哪顆語音引擎：
+ * 中／英／日／韓／粵 → SenseVoice；其餘語言 → Whisper 多語（該尺寸未安裝則回 null）。
+ */
+export function liveEngineFor(
+  langCode: string,
+  whisperInstalled: boolean,
+): 'sensevoice' | 'whisper' | null {
+  if (senseVoiceLangFor(langCode)) return 'sensevoice'
+  return whisperInstalled ? 'whisper' : null
+}
+
+/** 該語言是否由 SenseVoice 直接支援（供 UI 判斷要不要多語模型） */
+export function isSenseVoiceLanguage(langCode: string): boolean {
+  return senseVoiceLangFor(langCode) !== null
+}
+
+/** 多語模型狀態（瀏覽器預覽時回 null） */
+export async function getWhisperModelStatus(): Promise<WhisperModelStatus | null> {
+  try {
+    const r = await SpeechInput.whisperModelStatus()
+    return {
+      installed: (r?.installed ?? {}) as Record<string, boolean>,
+      sizeMb: (r?.sizeMb ?? {}) as Record<string, number>,
+      anyInstalled: !!r?.anyInstalled,
+    }
+  } catch {
+    return null
+  }
+}
+
+/** 下載指定尺寸的多語模型（可傳進度回呼；原生端走 asrDownloadProgress 事件）；回傳大小 MB */
+export async function downloadWhisperModel(
+  size: WhisperSize,
+  onProgress?: (p: AsrDownloadProgress) => void,
+): Promise<number> {
+  downloadHandler = onProgress ?? null
+  await ensureDownloadListener()
+  try {
+    const r = await SpeechInput.downloadWhisperModel({ size })
+    return Number(r?.sizeMb ?? 0)
+  } finally {
+    downloadHandler = null
+  }
+}
+
+/** 刪除多語模型（不帶 size 則全刪） */
+export async function deleteWhisperModel(size?: WhisperSize): Promise<boolean> {
+  try {
+    const r = await SpeechInput.deleteWhisperModel(size ? { size } : {})
+    return !!r?.deleted
+  } catch {
+    return false
+  }
+}
+
+/** 原生端推來的一句辨識結果（尚未翻譯） */
+export interface LiveSegment {
+  text: string
+  language: string
+  /** 這句的音訊長度（毫秒） */
+  audioMs: number
+  /** SenseVoice 推論耗時（毫秒） */
+  inferenceMs: number
+}
+
+export interface LiveStatusEvent {
+  state: 'stopped' | 'error'
+  message?: string
+}
+
+/** 即時模式模型狀態（瀏覽器預覽時回 null） */
+export async function getLiveModelStatus(): Promise<LiveModelStatus | null> {
+  try {
+    const r = await SpeechInput.liveModelStatus()
+    return {
+      vadInstalled: !!r?.vadInstalled,
+      asrInstalled: !!r?.asrInstalled,
+      whisperInstalled: (r?.whisperInstalled ?? {}) as Record<string, boolean>,
+      whisperAnyInstalled: !!r?.whisperAnyInstalled,
+      vadBytes: Number(r?.vadBytes ?? 0),
+      dir: String(r?.dir ?? ''),
+    }
+  } catch {
+    return null
+  }
+}
+
+/** 下載 VAD 句切模型（約 2MB）；回傳大小 MB */
+export async function downloadVadModel(): Promise<number> {
+  const r = await SpeechInput.downloadVadModel({})
+  return Number(r?.sizeMb ?? 0)
+}
+
+/** 開始即時翻譯；language 用 SenseVoice 語言碼（zh/en/ja/ko/yue） */
+export async function startLiveTranslation(
+  language: string,
+  whisperSize?: WhisperSize,
+): Promise<{ audioSource: number }> {
+  const r = await SpeechInput.startLiveTranslation({ language, whisperSize })
+  return { audioSource: Number(r?.audioSource ?? -1) }
+}
+
+/** 停止即時翻譯（原生端會 flush，最後一句仍會送出） */
+export async function stopLiveTranslation(): Promise<void> {
+  await SpeechInput.stopLiveTranslation()
+}
+
+/** 訂閱逐句辨識結果；回傳 handle 供卸載時 remove() */
+export function addLiveSegmentListener(
+  fn: (seg: LiveSegment) => void,
+): Promise<PluginListenerHandle> & PluginListenerHandle {
+  return SpeechInput.addListener('liveSegment', (data) => {
+    fn({
+      text: String(data?.text ?? ''),
+      language: String(data?.language ?? ''),
+      audioMs: Number(data?.audioMs ?? 0),
+      inferenceMs: Number(data?.inferenceMs ?? 0),
+    })
+  })
+}
+
+/** 訂閱即時模式狀態（停止／錯誤） */
+export function addLiveStatusListener(
+  fn: (st: LiveStatusEvent) => void,
+): Promise<PluginListenerHandle> & PluginListenerHandle {
+  return SpeechInput.addListener('liveStatus', (data) => {
+    const state = String(data?.state ?? '')
+    if (state !== 'stopped' && state !== 'error') return
+    fn({ state, message: data?.message ? String(data.message) : undefined })
+  })
 }

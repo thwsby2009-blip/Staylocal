@@ -1,0 +1,78 @@
+# 規劃：即時翻譯（連續收音逐句翻譯）2026-11-10/11
+
+> 定位不變：**零 API key、零帳號、零上傳**。即時翻譯與批次聽寫共用同一顆端側語音模型，全部在裝置上跑。
+
+## 目標
+按一次「開始即時翻譯」後連續收音，**講完一句（停頓約 1.2 秒）就出原文與譯文**，不必按停止。
+驗收：飛航模式下，對著影片／對話講話 → 逐句字幕（原文＋譯文＋延遲）出現，全程零網路。
+
+## 架構（連續串流；與批次聽寫的差異）
+
+```
+AudioRecord(UNPROCESSED, 16kHz mono, 100ms 讀取)
+        │
+        ▼
+前級軟體 AGC（目標 RMS≈0.07、上限 60 倍、每 100ms 最多變 1.5 倍）
+        │
+        ▼
+Silero VAD 句切（threshold 0.4、minSilence 1.2s、maxSpeech 8s）
+        │  每切出一段
+        ▼
+端側辨識（依語言自動選引擎）
+   ├─ 中／英／日／韓／粵 → SenseVoice（228 MiB，選配下載）
+   └─ 其他語言　　　　　 → Whisper 多語（tiny 104／base 161／small 375 MB，逐尺寸下載）
+        │  liveSegment 事件回 JS
+        ▼
+幻覺過濾（純符號／同句重複 ≥4 次／單字元長串／單詞反覆佔比 ≥50% → 丟棄）
+        │
+        ▼
+ML Kit 逐句翻譯 → 目標為中文時 OpenCC cn→twp 繁化 → 雙欄字幕
+```
+
+- 與批次架構的關鍵差別：**句界由 VAD 決定**（不是使用者按停止），且音訊是連續進來的；停止時會 `flush()` 把最後一句補送。
+- 收尾設計：`stopLiveTranslation` 會 join 執行緒（3 秒上限）→ 確保最後一句不遺漏。
+
+## 實作位置
+| 檔案 | 內容 |
+|---|---|
+| `android/.../SpeechInputPlugin.java` | 即時 session（start/stop）、AGC、VAD、雙引擎載入、幻覺過濾、模型下載（VAD／Whisper 尺寸） |
+| `src/services/speechService.ts` | 橋接與事件訂閱、`liveEngineFor()` 語言→引擎對應、尺寸選項常數 |
+| `src/App.tsx` | 「即時翻譯」分頁：語言對、開始／停止、逐句字幕卡、模型下載卡（VAD／SenseVoice／Whisper 尺寸選擇） |
+| `src/services/liveService.test.ts` | 語言→引擎對應的單元測試 |
+
+## 實測與調校紀錄（Sony Xperia 5 IV / V20 世代機）
+
+### 1) 遠場小聲（60 cm 外、最小可聞音量、有風扇）
+- 量測：`rawRms ≈ 0.0015`（≈ **-56 dBFS**）；後級增益上限 10 倍完全不夠。
+- 症狀：辨識幾乎不出字，或 Whisper 產生**重複迴圈幻覺**（`Jeg vil ikke spille... ×10`、純 `- - - -`）。
+- 解法：**把增益移到 VAD 之前**（前級 AGC、上限拉到 60 倍）＋ 幻覺過濾 ＋ 句子上限 15s→8s。
+
+### 2) 語言選對比什麼都重要
+- 使用者拿「瑞典文」教學影片測「丹麥文」→ 得到「腔調像、字不對」的假象（近親語言被硬轉）。
+- 對照用字幕：`yt-dlp --write-auto-subs --sub-langs sv <URL>`，再與辨識結果逐句算相似度。
+
+### 3) Whisper 尺寸（瑞典文，同一支影片逐句對字幕）
+| 模型 | 大小 | 相似度 | 完全相符 | 明顯錯誤 | 辨識中位延遲 |
+|---|---|---|---|---|---|
+| base | 161 MB | 0.64–0.66 | 2–3 句 / 28 | 12 句 | 612 ms |
+| small | 375 MB | 0.78 | 14 句 / 32 | 8 句 | 1753 ms |
+| small ＋ 併句（minSilence 0.9→1.2s） | — | **0.80** | **16 句 / 35** | **6 句** | 1587 ms |
+
+- 殘餘錯誤集中在**極短片段**（`Samot.`←`semester`、`Hoppen`←`Toppen`）與音近混淆（`Jag är speedmad`←`Jag älskar piano`）。
+- 故**非 SenseVoice 語言預設 small**；small 再上去（medium ≈ 1.5 GB）手機不實用。
+
+## 評估方法（可重複）
+1. `yt-dlp` 取影片字幕當正確答案（自動字幕需去重）。
+2. logcat **串流擷取**（`adb logcat -s SpeechInputPlugin:I > f`）——系統 lowmemorykiller 會很快洗掉緩衝區，事後 dump 常已遺失。
+3. `difflib.SequenceMatcher` 為每句找最相似字幕句算相似度，統計「完全相符／部分／明顯錯誤」。
+
+## 已知限制
+- 即時翻譯僅支援「SenseVoice 的 5 語言」＋「Whisper 支援的語言」；系統端側引擎未接入即時模式。
+- 同一語言＝目標語言時仍會多送一次翻譯（PC 版原型會跳過，Android 版未對齊）。
+- 使用者必須自行選對來源語言（未做自動偵測；Whisper／SenseVoice 皆支援 auto）。
+- 併句越長愈準但延遲越高；目前 1.2 秒停頓為平衡點。
+
+## 後續可做
+1. 「自動偵測語言」選項（避免選錯語言這類錯誤）。
+2. 即時模式下偵測語言＝目標語言時跳過翻譯。
+3. Whisper medium 以上的可行性（目前判斷不實用）。

@@ -15,6 +15,7 @@
 - **⌨️ 文字翻譯**：51 種語言互譯，中文輸出自動轉台灣用字繁體（含詞彙轉換，如 software → 軟體）
 - **📦 語言包管理**：預先下載旅遊目的地語言包（實測**每個約 50 MB**），刪除釋放空間
 - **🎤 語音轉逐字稿**：錄音後端側轉文字（全離線），逐字稿可直接續接翻譯；中文／日／韓／英／粵另可選配**高準度模型**（SenseVoice，**228 MiB**，首次使用時下載，自動加標點；不下載也能用系統語音引擎）
+- **🎧 即時翻譯**：按一次開始連續收音，講完一句（停頓約 1.2 秒）就出原文與譯文，不必按停止。中／英／日／韓／粵由 SenseVoice 處理；其他語言（瑞典文、丹麥文等）可下載 **Whisper 多語模型**（tiny 104／base 161／small 375 MB，實測 small 明顯最準）
 
 > 💾 安裝空間總表見下方[安裝空間](#安裝空間--storage-footprint)：只裝 App 約 70-90 MB，全配（語音模型＋數個語言包）約 460 MB。
 
@@ -68,6 +69,7 @@
 > 💾 **圖中未標的安裝空間**：APK 內附 68 MB（OCR 10.6 MB／ASR 推論引擎 29.7 MB／翻譯引擎 15.6 MB）；選配下載高準度語音模型 228 MiB（≈ 239 MB）、翻譯語言包每語言約 50 MB。詳見下方[安裝空間](#安裝空間--storage-footprint)。
 
 - 所有辨識與翻譯**完全在裝置上執行**，飛航模式可用
+- **即時翻譯走連續串流**（與批次聽寫共用同一顆語音模型）：`AudioRecord(UNPROCESSED)` → **前級軟體 AGC**（遠場小聲補償；實測 60 cm 外、最小可聞音量只有 -56 dBFS，不補償模型聽不到）→ **Silero VAD 句切**（停頓 1.2 秒成句、單句上限 8 秒）→ 端側辨識 → ML Kit 逐句翻譯。辨識結果會過一層幻覺過濾（純符號／重複迴圈不顯示）
 - 語音走**批次架構**：先錄成 WAV，停止後才把音檔餵給辨識器（連續串流在舊機不可靠）；長錄音自動切段（系統引擎 12 秒、SenseVoice 25 秒）逐段轉寫再接起來
   > 💡 **2026/11/01 補充**：姊妹專案 VoiceNotes（雲端 Riva）實測發現「**切片長度是漏字主因**」——單次辨識會確定性跳過中間段落，切片越長、單次漏掉的區間越大；且切點位置決定漏在哪。該專案將切片 50→20 秒並加「雙次不同切點＋文字合併」後，缺漏率 14.5%→7.8%。**本專案同款模型已實測（2026/11/01）**：以完全相同設定（SenseVoice int8、sherpa-onnx 2.0.1、25 秒段）重跑 VoiceNotes 的實驗——25 秒切段相對三方聯集缺 4.2%、**無整句級漏失**（兩切點差異主要為用詞差異）、模型同樣完全可重現；整段不切則掉 43.7%（證實切段必要）。**結論：不需雙次合併**；日後若出現固定句漏，優先懷疑段長與切點，可試「位移切點重跑＋合併」。完整記錄見 VoiceNotes repo `VOICENOTES_DEV_LOG.md`（2026/11/01 節 6f）。
 - 收音刻意使用 **`UNPROCESSED` 原始音源**：`VOICE_RECOGNITION` 會被套上 Google 專屬降噪鏈，那條處理過的聲音只有 Google 自家引擎聽得懂，第三方離線模型（SenseVoice／Paraformer）會聽成雜訊
@@ -91,6 +93,7 @@
 | └ 網頁資產＋資源（含 OpenCC 詞庫） | 8 MB | | — |
 | 系統最佳化產物（dexopt / odex） | 約 10-20 MB | 安裝後由 Android 生成 | — |
 | **高準度離線語音模型**（SenseVoice int8，選配） | **228 MiB（≈ 239 MB）** | 首次使用時下載 | ✅ App 內可刪除 |
+| **多語語音模型**（Whisper int8，選配；即時翻譯的非中英日韓粵語言用） | tiny 104／base 161／**small 375 MB** | 首次使用該語言時下載 | ✅ App 內可刪除（逐尺寸） |
 | **翻譯語言包**（每個語言） | **約 40-60 MB**（實測 en_ja 61／en_ko 50／en_zh 43）| 首次使用該語言時下載 | ✅ App 內可刪除 |
 | OCR 模型 | 已含在 APK（10.6 MB） | — | — |
 
@@ -115,7 +118,7 @@
 | 連線對象 | 時機 | 必要性 |
 |---|---|---|
 | Google（ML Kit 翻譯語言包）| 首次使用某語言時下載 | 該語言要用才需要（約 50 MB／語言）|
-| HuggingFace（SenseVoice 語音模型）| 選配高準度語音首次使用時下載 | 可不下載，改用系統語音引擎 |
+| HuggingFace（SenseVoice／Whisper 語音模型）| 選配語音模型首次使用時下載 | 可不下載（改用系統語音引擎／不使用該語言）|
 | ~~Google（ML Kit 使用統計遙測）~~ | ~~App 啟動後背景~~ | **已移除**，見下 |
 
 **我們額外移除了 ML Kit 的遙測**：ML Kit 的推論雖然完全在裝置端，但 SDK 預設會把「使用統計」（API 名稱、輸入輸出大小、延遲、裝置／App 資訊、per-install 識別碼）上報到 `firebaselogging.googleapis.com`。本專案在 `AndroidManifest.xml` 以 manifest merge 的 `tools:node="remove"` 移除 `com.google.android.datatransport` 的三個元件，讓遙測管線根本不會初始化（理由與細節寫在該檔註解）。
@@ -145,7 +148,7 @@ grep uses-permission android/app/src/main/AndroidManifest.xml
 - [@capacitor-mlkit/text-recognition](https://github.com/capawesome-team/capacitor-mlkit)（ML Kit Text Recognition v2）
 - [opencc-js](https://github.com/nk2028/opencc-js)（s2twp：簡體→台灣繁體＋詞彙轉換）
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)（離線語音辨識推論，Apache-2.0；AAR 不進版控，需先跑 `bash scripts/fetch-deps.sh`）
-- Vitest（56 個單元測試）
+- Vitest（58 個單元測試）
 
 ## 已知限制 / Known Limitations
 
@@ -154,6 +157,7 @@ grep uses-permission android/app/src/main/AndroidManifest.xml
 - **OCR script 需選對來源語言**：ML Kit 按文字系統（Latin/中文/日文/韓文）分模型，拍照前請先選對來源語言
 - **中文輸出為簡體**：ML Kit 限制，本 app 已用 OpenCC 自動轉台灣繁體
 - **系統端側語音辨識品質有限**：內建模型偏向短句／指令、無標點、長段口語易漏字；要好的中文逐字稿請下載選配的 SenseVoice 模型
+- **即時翻譯的語言支援分兩級**：中／英／日／韓／粵由 SenseVoice 處理（每句約 0.2–0.6 秒、品質好）；其他語言需下載 Whisper 多語模型，較慢（small 每句約 1.6 秒）且準度較低（瑞典文實測逐句相似度 0.80、完全相符約半數）。**來源語言必須選對**——用丹麥文模型硬轉瑞典文會得到「腔調像、字不對」的結果（實測踩過）
 
 ## 開發 / Development
 

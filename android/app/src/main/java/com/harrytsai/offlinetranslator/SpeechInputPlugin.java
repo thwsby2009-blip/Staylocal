@@ -19,6 +19,11 @@ import com.k2fsa.sherpa.onnx.OfflineRecognizer;
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig;
 import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig;
 import com.k2fsa.sherpa.onnx.OfflineStream;
+import com.k2fsa.sherpa.onnx.OfflineWhisperModelConfig;
+import com.k2fsa.sherpa.onnx.SileroVadModelConfig;
+import com.k2fsa.sherpa.onnx.SpeechSegment;
+import com.k2fsa.sherpa.onnx.Vad;
+import com.k2fsa.sherpa.onnx.VadModelConfig;
 import android.speech.RecognitionSupport;
 import android.speech.RecognitionSupportCallback;
 import android.speech.RecognizerIntent;
@@ -1129,9 +1134,565 @@ public class SpeechInputPlugin extends Plugin implements RecognitionListener {
         return new String[] { reason, message };
     }
 
+    // ===== 即時翻譯（連續收音 → VAD 句切 → SenseVoice → liveSegment 事件）=====
+    // 與批次聽寫共用同一顆 SenseVoice 推論器；差別在音訊是連續進來的，
+    // 句界由 Silero VAD 決定（不是等使用者按停止）。
+    private static final String VAD_MODEL_URL =
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx";
+
+    private Vad liveVad;
+    private AudioRecord liveRecord;
+    private Thread liveThread;
+    private volatile boolean liveRunning = false;
+    private volatile String liveLanguage = "zh";
+    /** 本輪即時翻譯用的是 Whisper（非 SenseVoice 語言）還是 SenseVoice */
+    private volatile boolean liveUseWhisper = false;
+
+    private File vadModelFile() {
+        return new File(svDir(), "silero_vad.onnx");
+    }
+
+    // ----- 多語引擎：Whisper（多語 int8；丹麥文等非 SenseVoice 語言走這條）-----
+    // 尺寸可選：tiny 104MB（快、品質差）／base 161MB（折衷）／small 375MB（好、較慢）
+    private static final String[] WHISPER_SIZES = {"tiny", "base", "small"};
+    private static final String WHISPER_REPO = "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-";
+    private OfflineRecognizer whisperRecognizer;
+    private String whisperRecognizerKey = "";
+    private String liveWhisperSize = "base";
+
+    private static boolean validWhisperSize(String size) {
+        if (size == null) return false;
+        for (String s : WHISPER_SIZES) {
+            if (s.equals(size)) return true;
+        }
+        return false;
+    }
+
+    /** SenseVoice 支援的語言（其餘語言需要 Whisper） */
+    private static boolean senseVoiceSupports(String language) {
+        if (language == null) return false;
+        switch (language) {
+            case "zh":
+            case "yue":
+            case "en":
+            case "ja":
+            case "ko":
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private File whisperDir(String size) {
+        return new File(getContext().getFilesDir(), "whisper-" + size);
+    }
+
+    private File whisperEncFile(String size) {
+        return new File(whisperDir(size), size + "-encoder.int8.onnx");
+    }
+
+    private File whisperDecFile(String size) {
+        return new File(whisperDir(size), size + "-decoder.int8.onnx");
+    }
+
+    private File whisperTokensFile(String size) {
+        return new File(whisperDir(size), size + "-tokens.txt");
+    }
+
+    /** Whisper 該尺寸是否已安裝（三檔齊全且大小合理） */
+    private boolean whisperInstalled(String size) {
+        if (!validWhisperSize(size)) return false;
+        File e = whisperEncFile(size);
+        File d = whisperDecFile(size);
+        File t = whisperTokensFile(size);
+        return e.exists() && e.length() > 5_000_000
+                && d.exists() && d.length() > 40_000_000
+                && t.exists() && t.length() > 100_000;
+    }
+
+    /** 任一尺寸的多語模型是否已安裝（供 UI 判斷可否啟動） */
+    private boolean anyWhisperInstalled() {
+        for (String s : WHISPER_SIZES) {
+            if (whisperInstalled(s)) return true;
+        }
+        return false;
+    }
+
+    /** 各尺寸的多語模型狀態：installed{size:bool}、sizeMb{size:MB} */
+    @PluginMethod
+    public void whisperModelStatus(PluginCall call) {
+        JSObject installed = new JSObject();
+        JSObject sizeMb = new JSObject();
+        for (String s : WHISPER_SIZES) {
+            installed.put(s, whisperInstalled(s));
+            long bytes = 0;
+            for (File f : new File[]{whisperEncFile(s), whisperDecFile(s), whisperTokensFile(s)}) {
+                if (f.exists()) bytes += f.length();
+            }
+            sizeMb.put(s, Math.round(bytes / 1_000_000.0));
+        }
+        JSObject ret = new JSObject();
+        ret.put("installed", installed);
+        ret.put("sizeMb", sizeMb);
+        ret.put("anyInstalled", anyWhisperInstalled());
+        call.resolve(ret);
+    }
+
+    /** 下載指定尺寸的多語模型（tiny 104MB／base 161MB／small 375MB） */
+    @PluginMethod
+    public void downloadWhisperModel(PluginCall call) {
+        final String size = call.getString("size", "base");
+        if (!validWhisperSize(size)) {
+            call.reject("未知的多語模型尺寸：" + size);
+            return;
+        }
+        new Thread(() -> {
+            try {
+                File dir = whisperDir(size);
+                if (!dir.exists() && !dir.mkdirs()) throw new Exception("無法建立模型目錄");
+                String base = WHISPER_REPO + size + "/resolve/main/";
+                String[] files = {
+                        size + "-encoder.int8.onnx",
+                        size + "-decoder.int8.onnx",
+                        size + "-tokens.txt",
+                };
+                for (String name : files) {
+                    File part = new File(dir, name + ".part");
+                    downloadTo(base + name, part, name);
+                    File dest = new File(dir, name);
+                    if (dest.exists() && !dest.delete()) throw new Exception("無法覆寫舊檔");
+                    if (!part.renameTo(dest)) throw new Exception("更名失敗：" + name);
+                }
+                JSObject ret = new JSObject();
+                ret.put("installed", whisperInstalled(size));
+                ret.put("size", size);
+                ret.put("sizeMb", Math.round(
+                        (whisperEncFile(size).length() + whisperDecFile(size).length()
+                                + whisperTokensFile(size).length()) / 1_000_000.0));
+                call.resolve(ret);
+            } catch (Exception e) {
+                call.reject("多語模型下載失敗：" + e.getMessage());
+            }
+        }).start();
+    }
+
+    /** 刪除多語模型；帶 size 刪該尺寸，不帶則全刪 */
+    @PluginMethod
+    public void deleteWhisperModel(PluginCall call) {
+        final String size = call.getString("size", "");
+        releaseWhisper();
+        boolean ok = true;
+        String[] targets = validWhisperSize(size) ? new String[]{size} : WHISPER_SIZES;
+        for (String s : targets) {
+            for (File f : new File[]{whisperEncFile(s), whisperDecFile(s), whisperTokensFile(s)}) {
+                if (f.exists() && !f.delete()) ok = false;
+            }
+        }
+        JSObject ret = new JSObject();
+        ret.put("deleted", ok);
+        call.resolve(ret);
+    }
+
+    private void releaseWhisper() {
+        if (whisperRecognizer != null) {
+            try {
+                whisperRecognizer.release();
+            } catch (Exception ignored) {
+            }
+        }
+        whisperRecognizer = null;
+        whisperRecognizerKey = "";
+    }
+
+    /** 載入（或重用）Whisper 推論器；尺寸／語言／模型檔變了才重建 */
+    private void ensureWhisper(String size, String language) throws Exception {
+        File e = whisperEncFile(size);
+        File d = whisperDecFile(size);
+        File t = whisperTokensFile(size);
+        String key = e.getAbsolutePath() + "|" + e.length() + "|" + language;
+        if (whisperRecognizer != null && key.equals(whisperRecognizerKey)) return;
+        releaseWhisper();
+
+        FeatureConfig feat = new FeatureConfig();
+        feat.setSampleRate(SAMPLE_RATE);
+        feat.setFeatureDim(80);
+
+        OfflineWhisperModelConfig wh = new OfflineWhisperModelConfig();
+        wh.setEncoder(e.getAbsolutePath());
+        wh.setDecoder(d.getAbsolutePath());
+        wh.setLanguage(language);   // Whisper 語言碼（da/zh/en/ja/ko…）
+        wh.setTask("transcribe");
+
+        OfflineModelConfig mc = new OfflineModelConfig();
+        mc.setWhisper(wh);
+        mc.setTokens(t.getAbsolutePath());
+        mc.setNumThreads(2);
+        mc.setModelType("whisper");
+        mc.setProvider("cpu");
+        mc.setDebug(false);
+
+        OfflineRecognizerConfig cfg = new OfflineRecognizerConfig();
+        cfg.setFeatConfig(feat);
+        cfg.setModelConfig(mc);
+        // assetManager 一律 null（模型在檔案系統上）
+        whisperRecognizer = new OfflineRecognizer(null, cfg);
+        whisperRecognizerKey = key;
+    }
+
+    /**
+     * 即時模式所需模型狀態：
+     * VAD（約 2MB，句切）＋ SenseVoice（約 240MB，中英日韓粵）＋ Whisper（約 104MB，其他語言）
+     */
+    @PluginMethod
+    public void liveModelStatus(PluginCall call) {
+        File v = vadModelFile();
+        File m = svModelFile();
+        File t = svTokensFile();
+        JSObject ret = new JSObject();
+        ret.put("vadInstalled", v.exists() && v.length() > 100_000);
+        ret.put("asrInstalled", m.exists() && m.length() > 1_000_000
+                && t.exists() && t.length() > 1000);
+        JSObject whisperMap = new JSObject();
+        for (String s : WHISPER_SIZES) {
+            whisperMap.put(s, whisperInstalled(s));
+        }
+        ret.put("whisperInstalled", whisperMap);
+        ret.put("whisperAnyInstalled", anyWhisperInstalled());
+        ret.put("vadBytes", v.exists() ? v.length() : 0);
+        ret.put("dir", svDir().getAbsolutePath());
+        call.resolve(ret);
+    }
+
+    /** 下載 VAD 模型（約 2MB；即時模式第一次使用時需要） */
+    @PluginMethod
+    public void downloadVadModel(PluginCall call) {
+        new Thread(() -> {
+            try {
+                File dir = svDir();
+                if (!dir.exists() && !dir.mkdirs()) {
+                    throw new Exception("無法建立模型目錄");
+                }
+                File part = new File(dir, "silero_vad.onnx.part");
+                downloadTo(VAD_MODEL_URL, part, "silero_vad.onnx");
+                File dest = vadModelFile();
+                if (dest.exists() && !dest.delete()) {
+                    throw new Exception("無法覆寫舊檔");
+                }
+                if (!part.renameTo(dest)) {
+                    throw new Exception("更名失敗");
+                }
+                JSObject ret = new JSObject();
+                ret.put("installed", true);
+                ret.put("sizeMb", Math.round(dest.length() / 1_000_000.0));
+                call.resolve(ret);
+            } catch (Exception e) {
+                call.reject("句切模型下載失敗：" + e.getMessage());
+            }
+        }).start();
+    }
+
+    @PluginMethod
+    public void startLiveTranslation(PluginCall call) {
+        if (getPermissionState(PERMISSION_ALIAS) != PermissionState.GRANTED) {
+            requestAllPermissions(call, "micPermissionCallbackForLive");
+            return;
+        }
+        beginLive(call);
+    }
+
+    @PermissionCallback
+    private void micPermissionCallbackForLive(PluginCall call) {
+        if (getPermissionState(PERMISSION_ALIAS) == PermissionState.GRANTED) {
+            beginLive(call);
+        } else {
+            call.reject("麥克風權限被拒，請到系統設定開啟");
+        }
+    }
+
+    private void beginLive(PluginCall call) {
+        if (liveRunning) {
+            call.reject("即時翻譯已在進行中");
+            return;
+        }
+        final String language = call.getString("language", "zh");
+        File v = vadModelFile();
+        if (!v.exists() || v.length() < 100_000) {
+            call.reject("尚未下載句切模型，請先下載");
+            return;
+        }
+        // 語言決定用哪顆引擎：中英日韓粵走 SenseVoice，其餘走 Whisper 多語（尺寸由前端指定）
+        final String whisperSize = call.getString("whisperSize", "base");
+        final boolean useWhisper = !senseVoiceSupports(language);
+        if (useWhisper) {
+            if (!validWhisperSize(whisperSize) || !whisperInstalled(whisperSize)) {
+                call.reject("「" + language + "」需要多語模型（" + whisperSize + "），請先下載");
+                return;
+            }
+        } else if (!svModelFile().exists() || !svTokensFile().exists()) {
+            call.reject("尚未下載高準度語音模型，請先下載");
+            return;
+        }
+        try {
+            if (useWhisper) {
+                ensureWhisper(whisperSize, language);
+                liveWhisperSize = whisperSize;
+            } else {
+                ensureSenseVoice(language); // 首次會載入約 240MB 模型，需數秒
+            }
+            liveUseWhisper = useWhisper;
+        } catch (Exception e) {
+            call.reject("語音模型載入失敗：" + e.getMessage());
+            return;
+        }
+        try {
+            SileroVadModelConfig svc = new SileroVadModelConfig();
+            svc.setModel(v.getAbsolutePath());
+            // 遠場/小聲場景（實測：60cm、最小可聞音量、有風扇底噪）門檻 0.5 抓不到 →
+            // 放寬到 0.4，並把句尾靜音拉長到 0.6s（吵雜環境避免句子被切碎）
+            svc.setThreshold(0.4f);
+            // 1.2s 才斷句：Whisper 對「極短句 + 無上下文」最會出錯
+            // （實測殘餘錯誤集中在單字級段落，如 Samot./semester），
+            // 把相鄰短句併成較長片段可明顯改善
+            svc.setMinSilenceDuration(1.2f);
+            svc.setMinSpeechDuration(0.25f);
+            // 8 秒上限：Whisper 對過長又模糊的音訊容易進入重複迴圈幻覺
+            svc.setMaxSpeechDuration(8.0f);
+
+            VadModelConfig vc = new VadModelConfig();
+            vc.setSileroVadModelConfig(svc);
+            vc.setSampleRate(SAMPLE_RATE);
+            vc.setNumThreads(1);
+            vc.setProvider("cpu");
+            // assetManager 一律 null：模型在檔案系統上（同 OfflineRecognizer 的血淚教訓）
+            liveVad = new Vad(null, vc);
+
+            int minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE,
+                    AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+            int bufSize = Math.max(minBuf * 2, SAMPLE_RATE);
+            int src = pickAudioSource();
+            liveRecord = new AudioRecord(src, SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT, bufSize);
+            if (liveRecord.getState() != AudioRecord.STATE_INITIALIZED
+                    && src != MediaRecorder.AudioSource.MIC) {
+                liveRecord.release();
+                src = MediaRecorder.AudioSource.MIC;
+                liveRecord = new AudioRecord(src, SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO,
+                        AudioFormat.ENCODING_PCM_16BIT, bufSize);
+            }
+            if (liveRecord.getState() != AudioRecord.STATE_INITIALIZED) {
+                liveRecord.release();
+                liveRecord = null;
+                throw new Exception("音訊裝置初始化失敗（可能被其他 App 佔用）");
+            }
+            liveLanguage = language;
+            liveGain = 1f;              // 每輪重新起算 AGC
+            liveRunning = true;
+            final AudioRecord rec = liveRecord;
+            liveRecord.startRecording();
+            liveThread = new Thread(() -> liveLoop(rec));
+            liveThread.start();
+
+            JSObject ret = new JSObject();
+            ret.put("started", true);
+            ret.put("language", language);
+            ret.put("audioSource", src); // 6=UNPROCESSED, 1=MIC
+            call.resolve(ret);
+        } catch (Exception e) {
+            stopLiveInternal();
+            call.reject("即時翻譯啟動失敗：" + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void stopLiveTranslation(PluginCall call) {
+        stopLiveInternal();
+        JSObject ret = new JSObject();
+        ret.put("stopped", true);
+        call.resolve(ret);
+    }
+
+    /** 收掉即時模式（可重複呼叫、不丟例外） */
+    private void stopLiveInternal() {
+        liveRunning = false;
+        try {
+            if (liveThread != null) liveThread.join(3000);
+        } catch (InterruptedException ignored) {
+        }
+        liveThread = null;
+        try {
+            if (liveRecord != null) {
+                liveRecord.stop();
+                liveRecord.release();
+            }
+        } catch (Exception ignored) {
+        }
+        liveRecord = null;
+        if (liveVad != null) {
+            try {
+                liveVad.release();
+            } catch (Exception ignored) {
+            }
+        }
+        liveVad = null;
+    }
+
+    /** 目前套用的前級增益（軟體 AGC，平滑調整） */
+    private float liveGain = 1f;
+
+    /**
+     * 前級軟體 AGC：把輸入拉到模型舒服的音量（目標 RMS ≈ 0.07 ≈ -23dBFS）。
+     * 必須在 VAD 之前做——遠場小聲（實測 -56dBFS）若只靠後級增益，
+     * VAD 本身聽不到、模型也只拿到幾乎無聲的音訊，Whisper 會開始重複迴圈幻覺。
+     * 每 100ms 塊最多變化 1.5 倍，避免抽吸感與瞬間爆音。
+     */
+    private float[] applyAgc(float[] chunk) {
+        double rms = rmsOf(chunk);
+        if (rms < 1e-5) return chunk;              // 全靜音不動（保留真正無聲，讓 VAD 判定）
+        float want = (float) (0.07 / rms);
+        if (want > 60f) want = 60f;
+        if (want < 0.5f) want = 0.5f;              // 太大聲可衰減，避免削波
+        float next = liveGain;
+        if (want > liveGain * 1.5f) next = liveGain * 1.5f;
+        else if (want < liveGain / 1.5f) next = liveGain / 1.5f;
+        else next = want;
+        if (next < 0.5f) next = 0.5f;
+        if (next > 60f) next = 60f;
+        liveGain = next;
+        float[] out = new float[chunk.length];
+        for (int i = 0; i < chunk.length; i++) {
+            float v = chunk[i] * liveGain;
+            out[i] = v > 1f ? 1f : (v < -1f ? -1f : v);
+        }
+        return out;
+    }
+
+    /**
+     * 判斷是否為退化輸出（Whisper 在模糊/小聲音訊上的典型幻覺）：
+     * 純符號、同一句重複多次、或單一字元連續長串。
+     * 這類結果不要顯示給使用者，免得看起來像「翻譯很爛」。
+     */
+    private static boolean looksDegenerate(String text) {
+        if (text == null) return true;
+        String t = text.trim();
+        if (t.isEmpty()) return true;
+        String letters = t.replaceAll("[\\s\\p{Punct}]+", "");
+        if (letters.length() < 2) return true;                       // 只剩符號
+        if (java.util.regex.Pattern.compile("(.)\\1{14,}").matcher(t).find()) return true; // 單字元×15+
+        // 單一詞彙反覆（如 "i i i i i"、"næ næ næ næ"）：佔全句一半以上且出現 ≥4 次
+        String[] toks = t.split("\\s+");
+        if (toks.length >= 4) {
+            java.util.HashMap<String, Integer> tf = new java.util.HashMap<>();
+            for (String tk : toks) {
+                String k = tk.replaceAll("[\\p{Punct}]", "");
+                if (k.isEmpty()) continue;
+                tf.put(k, tf.getOrDefault(k, 0) + 1);
+            }
+            for (int c : tf.values()) {
+                if (c >= 4 && c * 1.0 / toks.length >= 0.5) return true;
+            }
+        }
+        String[] parts = t.split("[.!?。！？]+");
+        java.util.HashMap<String, Integer> freq = new java.util.HashMap<>();
+        for (String p : parts) {
+            String k = p.trim();
+            if (k.length() < 4) continue;
+            int c = freq.getOrDefault(k, 0) + 1;
+            freq.put(k, c);
+            if (c >= 4) return true;                                  // 同一句出現 4 次以上
+        }
+        return false;
+    }
+
+    /** 連續收音迴圈：AGC → VAD 句切 → Whisper／SenseVoice → liveSegment 事件 */
+    private void liveLoop(AudioRecord rec) {
+        final int frame = SAMPLE_RATE / 10; // 100ms
+        short[] buf = new short[frame];
+        float[] fbuf = new float[frame];
+        try {
+            while (liveRunning) {
+                int n = rec.read(buf, 0, buf.length);
+                if (n <= 0) continue;
+                for (int i = 0; i < n; i++) fbuf[i] = buf[i] / 32768.0f;
+                float[] raw = (n == frame) ? fbuf : java.util.Arrays.copyOf(fbuf, n);
+                liveVad.acceptWaveform(applyAgc(raw));   // 先增益再餵 VAD
+                drainLiveSegments();
+            }
+        } catch (Exception e) {
+            JSObject p = new JSObject();
+            p.put("state", "error");
+            p.put("message", String.valueOf(e.getMessage()));
+            notifyListeners("liveStatus", p);
+        }
+        // 收尾：把緩衝中最後一句切出來（使用者按停止時講的那句不能漏）
+        try {
+            if (liveVad != null) {
+                liveVad.flush();
+                drainLiveSegments();
+            }
+        } catch (Exception ignored) {
+        }
+        JSObject p = new JSObject();
+        p.put("state", "stopped");
+        notifyListeners("liveStatus", p);
+    }
+
+    private static double rmsOf(float[] s) {
+        if (s == null || s.length == 0) return 0;
+        double sum = 0;
+        for (float v : s) sum += (double) v * (double) v;
+        return Math.sqrt(sum / s.length);
+    }
+
+    /** 取出 VAD 已切出的語段（已過前級 AGC）→ 逐句辨識 → 推事件 */
+    private void drainLiveSegments() {
+        while (!liveVad.empty()) {
+            SpeechSegment seg = liveVad.front();
+            float[] samples = seg.getSamples();
+            liveVad.pop();
+            if (samples == null) continue;
+            if (samples.length < SAMPLE_RATE / 4) continue;                   // <0.25s 丟棄
+            long t0 = System.currentTimeMillis();
+            String text = "";
+            final OfflineRecognizer rec = liveUseWhisper ? whisperRecognizer : svRecognizer;
+            try {
+                if (rec == null) throw new IllegalStateException("推論器未就緒");
+                OfflineStream st = rec.createStream();
+                st.acceptWaveform(samples, SAMPLE_RATE);
+                rec.decode(st);
+                text = rec.getResult(st).getText();
+                st.release();
+                // Whisper 的輸出常帶開頭的「- 」（訓練資料的段落標記），清掉
+                if (text != null) text = text.replaceFirst("^[-–—\\s]+", "");
+            } catch (Exception e) {
+                text = "";
+            }
+            int ms = (int) (System.currentTimeMillis() - t0);
+            if (text == null || text.trim().isEmpty()) continue;
+            if (looksDegenerate(text)) {
+                // 幻覺（純符號／重複迴圈）不顯示，避免看起來像「翻譯很爛」
+                android.util.Log.i("SpeechInputPlugin",
+                        String.format("liveSegment DROPPED(degenerate) agc=%.1f len=%d ms=%d text=%s",
+                                liveGain, samples.length, ms, text.trim()));
+                continue;
+            }
+            android.util.Log.i("SpeechInputPlugin",
+                    String.format("liveSegment agc=%.1f segRms=%.4f len=%d ms=%d engine=%s text=%s",
+                            liveGain, rmsOf(samples), samples.length, ms,
+                            liveUseWhisper ? ("whisper-" + liveWhisperSize) : "sensevoice", text.trim()));
+            JSObject p = new JSObject();
+            p.put("text", text.trim());
+            p.put("language", liveLanguage);
+            p.put("audioMs", Math.round(samples.length * 1000.0 / SAMPLE_RATE));
+            p.put("inferenceMs", ms);
+            notifyListeners("liveSegment", p);
+        }
+    }
+
     @Override
     protected void handleOnDestroy() {
-        // 收掉進行中的錄音與轉寫
+        // 收掉進行中的即時翻譯、錄音與轉寫
+        stopLiveInternal();
+        releaseWhisper();
         recording = false;
         try {
             if (audioRecord != null) {

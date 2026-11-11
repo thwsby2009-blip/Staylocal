@@ -28,11 +28,37 @@ import {
   downloadAsrModel,
   deleteAsrModel,
   clearPreviousDictation,
+  getLiveModelStatus,
+  downloadVadModel,
+  downloadWhisperModel,
+  startLiveTranslation,
+  stopLiveTranslation,
+  addLiveSegmentListener,
+  addLiveStatusListener,
+  liveEngineFor,
+  isSenseVoiceLanguage,
+  WHISPER_SIZES,
+  WHISPER_SIZE_LABEL,
+  type WhisperSize,
   type AsrModelStatus,
   type DictationSnapshot,
+  type LiveModelStatus,
 } from './services/speechService'
 
-type Tab = 'collection' | 'text' | 'packs'
+type Tab = 'collection' | 'live' | 'text' | 'packs'
+
+/** 即時翻譯的一列字幕（原文＋譯文＋延遲） */
+interface LiveRow {
+  id: number
+  src: string
+  dst: string
+  lang: string
+  audioMs: number
+  asrMs: number
+  mtMs: number
+  pending: boolean
+  error?: string
+}
 type Busy = null | 'downloading' | 'translating' | 'processing'
 
 function App() {
@@ -67,6 +93,23 @@ function App() {
   const [asrProgress, setAsrProgress] = useState<number | null>(null)
   const [asrBusy, setAsrBusy] = useState(false)
 
+  // 即時翻譯（連續收音 → 逐句辨識 → 逐句翻譯）
+  const [liveOn, setLiveOn] = useState(false)
+  const [liveRows, setLiveRows] = useState<LiveRow[]>([])
+  const [liveError, setLiveError] = useState('')
+  const [liveModel, setLiveModel] = useState<LiveModelStatus | null>(null)
+  const [vadBusy, setVadBusy] = useState(false)
+  const [whisperBusy, setWhisperBusy] = useState(false)
+  const [whisperProgress, setWhisperProgress] = useState<number | null>(null)
+  // 多語模型品質（tiny/base/small）：記在裝置上，重啟不重置
+  const [whisperSize, setWhisperSize] = useState<WhisperSize>(
+    // 實測：base 相似度 0.64／small 0.78（同片對照），故預設 small
+    () => (localStorage.getItem('ot_whisper_size') as WhisperSize) || 'small',
+  )
+  // 事件回呼裡要用「當下的」語言對；用 ref 避免拿到過期的 state
+  const livePairRef = useRef({ source, target })
+  const liveIdRef = useRef(0)
+
   // 錄音計時（顯示錄了多久）
   useEffect(() => {
     if (!recording) return
@@ -77,6 +120,57 @@ function App() {
   // 開頁時查一次高準度模型狀態（瀏覽器預覽時回 null）
   useEffect(() => {
     getAsrModelStatus().then(setAsrStatus)
+    getLiveModelStatus().then(setLiveModel)
+  }, [])
+
+  // 語言對隨時同步到 ref（事件回呼要用最新的）
+  useEffect(() => {
+    livePairRef.current = { source, target }
+  }, [source, target])
+
+  // 逐句辨識結果 → 逐句翻譯 → 更新字幕列（原生端只送辨識，翻譯在 JS 端做）
+  useEffect(() => {
+    const segHandle = addLiveSegmentListener(async (seg) => {
+      const { source: srcLang, target: tgtLang } = livePairRef.current
+      const id = ++liveIdRef.current
+      setLiveRows((prev) => [
+        {
+          id,
+          src: seg.text,
+          dst: '',
+          lang: seg.language,
+          audioMs: seg.audioMs,
+          asrMs: seg.inferenceMs,
+          mtMs: 0,
+          pending: true,
+        },
+        ...prev,
+      ])
+      const t0 = performance.now()
+      try {
+        const translated = await translateText(seg.text, srcLang, tgtLang)
+        const mtMs = Math.round(performance.now() - t0)
+        setLiveRows((prev) =>
+          prev.map((r) => (r.id === id ? { ...r, dst: translated, mtMs, pending: false } : r)),
+        )
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : '翻譯失敗'
+        setLiveRows((prev) =>
+          prev.map((r) => (r.id === id ? { ...r, pending: false, error: msg } : r)),
+        )
+      }
+    })
+    const statusHandle = addLiveStatusListener((st) => {
+      if (st.state === 'error') {
+        setLiveError(st.message ?? '即時辨識發生錯誤')
+        setLiveOn(false)
+      }
+      if (st.state === 'stopped') setLiveOn(false)
+    })
+    return () => {
+      void segHandle.then((h) => h.remove())
+      void statusHandle.then((h) => h.remove())
+    }
   }, [])
 
   // 記住語言選擇（重啟後不重置）
@@ -86,6 +180,9 @@ function App() {
   useEffect(() => {
     localStorage.setItem('ot_target', target)
   }, [target])
+  useEffect(() => {
+    localStorage.setItem('ot_whisper_size', whisperSize)
+  }, [whisperSize])
 
   // 語言包管理
   const [downloadedLangs, setDownloadedLangs] = useState<string[]>([])
@@ -216,6 +313,7 @@ function App() {
         setAsrProgress(p.percent >= 0 ? p.percent : null)
       })
       setAsrStatus(await getAsrModelStatus())
+      setLiveModel(await getLiveModelStatus())
       setNotice(`高準度語音模型下載完成（${mb}MB），之後的錄音會自動使用它`)
     } catch (e) {
       setTextError(e instanceof Error ? e.message : '模型下載失敗')
@@ -375,6 +473,103 @@ function App() {
     }
   }
 
+  // ===== 即時翻譯 =====
+
+  async function handleDownloadWhisper() {
+    setWhisperBusy(true)
+    setWhisperProgress(0)
+    setLiveError('')
+    setNotice(`正在下載多語模型 ${whisperSize}（${WHISPER_SIZE_LABEL[whisperSize]}）…`)
+    try {
+      const mb = await downloadWhisperModel(whisperSize, (p) => {
+        setWhisperProgress(p.percent >= 0 ? p.percent : null)
+        setNotice(
+          `正在下載多語模型 ${whisperSize}：${p.file}${
+            p.percent >= 0 ? `（${p.percent}%）` : ''
+          }`,
+        )
+      })
+      setLiveModel(await getLiveModelStatus())
+      setNotice(`多語模型 ${whisperSize} 下載完成（${mb}MB）——瑞典文／丹麥文等語言現在可以即時翻譯了`)
+    } catch (e) {
+      setLiveError(e instanceof Error ? e.message : '多語模型下載失敗')
+      setNotice('')
+    } finally {
+      setWhisperBusy(false)
+      setWhisperProgress(null)
+    }
+  }
+
+  async function handleDownloadVad() {
+    setVadBusy(true)
+    setLiveError('')
+    try {
+      const mb = await downloadVadModel()
+      setLiveModel(await getLiveModelStatus())
+      setNotice(`句切模型下載完成（${mb || 2}MB）`)
+    } catch (e) {
+      setLiveError(e instanceof Error ? e.message : '句切模型下載失敗')
+    } finally {
+      setVadBusy(false)
+    }
+  }
+
+  async function handleToggleLive() {
+    setLiveError('')
+    if (liveOn) {
+      setLiveOn(false)
+      try {
+        await stopLiveTranslation()
+      } catch {
+        // 停止失敗不影響 UI（原生端會自行收尾）
+      }
+      return
+    }
+    const status = liveModel ?? (await getLiveModelStatus())
+    if (!status) {
+      setLiveError('無法查詢模型狀態（請稍後再試）')
+      return
+    }
+    // 語言 → 引擎：中英日韓粵走 SenseVoice，其餘走 Whisper 多語
+    const engine = liveEngineFor(source, !!status.whisperInstalled?.[whisperSize])
+    if (engine === null) {
+      setLiveError(
+        `「${languageName(source)}」需要「多語模型 ${whisperSize}」才能即時聽寫，請先在下方下載`,
+      )
+      return
+    }
+    if (engine === 'sensevoice' && !status.asrInstalled) {
+      setLiveError('即時翻譯需要「高準度離線語音模型」（約 240MB），請先在下方下載')
+      return
+    }
+    if (!status.vadInstalled) {
+      setLiveError('即時翻譯需要「句切模型」（約 2MB），請先在下方下載')
+      return
+    }
+    // 翻譯語言包要先備好，否則每句都會卡在下載
+    try {
+      await ensureModelsReady(source, target, {
+        onProgress: ({ language }) => {
+          setNotice(`正在下載${languageName(language)}語言包…`)
+        },
+      })
+      setNotice('')
+    } catch (e) {
+      setLiveError(e instanceof Error ? e.message : '語言包下載失敗')
+      return
+    }
+    try {
+      // 直接傳來源語言碼與多語模型尺寸：原生端自行判斷走 SenseVoice 或 Whisper
+      const r = await startLiveTranslation(source, whisperSize)
+      setLiveOn(true)
+      setNotice(
+        `即時翻譯中（${r.audioSource === 6 ? '原始收音 UNPROCESSED' : 'MIC'}）——講完一句停頓一下就會出譯文`,
+      )
+    } catch (e) {
+      setLiveError(e instanceof Error ? e.message : '即時翻譯啟動失敗')
+    }
+  }
+
   function swapLanguages() {
     setSource(target)
     setTarget(source)
@@ -410,6 +605,12 @@ function App() {
     </>
   )
 
+  // 即時頁的模型需求（依目前選的來源語言決定要不要多語模型）
+  const srcIsSvLang = isSenseVoiceLanguage(source)
+  const liveNeedVad = !liveModel?.vadInstalled
+  const liveNeedSv = srcIsSvLang && !liveModel?.asrInstalled
+  const liveNeedWhisper = !srcIsSvLang && !liveModel?.whisperInstalled?.[whisperSize]
+
   return (
     <div className="app">
       <header className="app-header">
@@ -425,10 +626,20 @@ function App() {
           收藏夾
         </button>
         <button
+          className={tab === 'live' ? 'tab active' : 'tab'}
+          onClick={() => setTab('live')}
+        >
+          即時
+          <br />
+          翻譯
+        </button>
+        <button
           className={tab === 'text' ? 'tab active' : 'tab'}
           onClick={() => setTab('text')}
         >
-          文字翻譯
+          文字
+          <br />
+          翻譯
         </button>
         <button
           className={tab === 'packs' ? 'tab active' : 'tab'}
@@ -580,6 +791,137 @@ function App() {
           </div>
         </main>
       )}
+      {tab === 'live' && (
+        <main className="live-tab">
+          <div className="lang-row">{langSelectors('目標語言')}</div>
+
+          <button
+            className={liveOn ? 'live-btn on' : 'live-btn'}
+            onClick={handleToggleLive}
+          >
+            {liveOn ? '⏹ 停止即時翻譯（收音中）' : '🎙️ 開始即時翻譯'}
+          </button>
+
+          <p className="live-hint">
+            講完一句、停頓約半秒，該句的原文與譯文就會出現。辨識與翻譯全程在裝置上執行。
+          </p>
+
+          {/* 模型卡常駐：已安裝時也要能切換尺寸／下載其他尺寸 */}
+          <div className="asr-model-card">
+              <div className="asr-model-row">
+                <span className="asr-model-title">🧩 即時翻譯所需模型</span>
+                <button
+                  className="asr-model-btn"
+                  onClick={() => getLiveModelStatus().then(setLiveModel)}
+                  disabled={vadBusy || asrBusy || whisperBusy}
+                >
+                  重新檢查
+                </button>
+              </div>
+              {!srcIsSvLang && (
+                <div className="asr-model-row">
+                  <span className="asr-model-title">多語模型品質</span>
+                  <div className="size-picker">
+                    {WHISPER_SIZES.map((s) => (
+                      <button
+                        key={s}
+                        className={whisperSize === s ? 'size-btn active' : 'size-btn'}
+                        onClick={() => setWhisperSize(s)}
+                        disabled={whisperBusy}
+                      >
+                        {s}
+                        {liveModel?.whisperInstalled?.[s] ? ' ✓' : ''}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <p className="asr-model-hint">
+                {srcIsSvLang ? (
+                  <>
+                    高準度語音模型（中／英／日／韓／粵）：
+                    {liveModel?.asrInstalled ? '已安裝 ✓' : '未安裝（約 240MB）'}
+                    <br />
+                  </>
+                ) : (
+                  <>
+                    多語模型 {whisperSize}（{languageName(source)} 等語言）：
+                    {liveModel?.whisperInstalled?.[whisperSize] ? '已安裝 ✓' : '未安裝'}
+                    <br />
+                  </>
+                )}
+                句切模型：{liveModel?.vadInstalled ? '已安裝 ✓' : '未安裝（約 2MB）'}
+              </p>
+              <div className="asr-model-row">
+                {liveNeedSv && (
+                  <button
+                    className="asr-model-btn primary"
+                    onClick={handleDownloadAsrModel}
+                    disabled={asrBusy}
+                  >
+                    {asrBusy
+                      ? `下載中 ${asrProgress === null ? '…' : `${asrProgress}%`}`
+                      : '下載語音模型（240MB）'}
+                  </button>
+                )}
+                {liveNeedWhisper && (
+                  <button
+                    className="asr-model-btn primary"
+                    onClick={handleDownloadWhisper}
+                    disabled={whisperBusy}
+                  >
+                    {whisperBusy
+                      ? `下載中${whisperProgress === null ? '…' : ` ${whisperProgress}%`}`
+                      : `下載多語模型 ${whisperSize}`}
+                  </button>
+                )}
+                {liveNeedVad && (
+                  <button
+                    className="asr-model-btn primary"
+                    onClick={handleDownloadVad}
+                    disabled={vadBusy}
+                  >
+                    {vadBusy ? '下載中…' : '下載句切模型（2MB）'}
+                  </button>
+                )}
+              </div>
+          </div>
+
+          {liveError && <p className="error">{liveError}</p>}
+
+          {liveRows.length === 0 ? (
+            <div className="empty">
+              <p className="empty-icon">🎧</p>
+              <p>
+                按「開始即時翻譯」後
+                <br />
+                原文與譯文會一句一句出現在這裡
+              </p>
+            </div>
+          ) : (
+            <ul className="live-list">
+              {liveRows.map((r) => (
+                <li key={r.id} className="live-item">
+                  <p className="live-src">{r.src}</p>
+                  <p className="live-dst">
+                    {r.error ? `⚠ ${r.error}` : r.pending ? '翻譯中…' : r.dst}
+                  </p>
+                  <p className="live-meta">
+                    {r.lang ? `${r.lang.toUpperCase()} · ` : ''}音訊 {r.audioMs}ms · 辨識{' '}
+                    {r.asrMs}ms · 翻譯 {r.pending ? '…' : `${r.mtMs}ms`}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {liveRows.length > 0 && (
+            <button className="live-clear" onClick={() => setLiveRows([])}>
+              清空字幕
+            </button>
+          )}
+        </main>
+      )}
       {tab === 'packs' && (
         <main className="packs-tab">
           <p className="packs-hint">
@@ -628,7 +970,7 @@ function App() {
           翻譯與辨識完全在你的裝置上執行（ML Kit + OpenCC）。
           唯一的網路行為：首次使用的語言包下載。
         </p>
-        <p className="build-tag">build v27 · 聽寫診斷版（2026-10-29）</p>
+        <p className="build-tag">build v29 · 即時翻譯獨立頁（2026-11-10）</p>
       </footer>
     </div>
   )
