@@ -164,6 +164,37 @@ grep uses-permission android/app/src/main/AndroidManifest.xml
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)（離線語音辨識推論，Apache-2.0；AAR 不進版控，需先跑 `bash scripts/fetch-deps.sh`）
 - Vitest（58 個單元測試）
 
+## 資源限制 / Resource Constraints（fork 前必讀）
+
+本專案的「完全離線」是**用資源換來的**——每項能力都有明確的硬上限，fork 或接手前請先確認你能接受，不要等到上線才發現：
+
+### 模型能力的硬上限（不可透過設定突破）
+
+| 限制 | 實況 | 影響 |
+|---|---|---|
+| **SenseVoice 固定五語言** | `sherpa-onnx-sense-voice-zh-en-ja-ko-yue` 只訓練過中英日韓粵，引擎寫死（`SpeechInputPlugin.java` 的 `SV_MODEL_URL`） | 高品質語音辨識**只有這五種**，其他語言只能走 Whisper |
+| **Whisper small 是品質天花板** | App 內建最大只有 small（244M 參數）；medium（769M）以上手機跑不動 | 語音品質被鎖死在 small 的水準——對 listed 14 語言夠用（WER<25%），但離「雲端等級」（large-v3 WER 3-8%）有明顯差距 |
+| **低資源語言結構性死路** | 泰盧固/坦米爾/孟加拉等：Whisper 連 large 都 WER>35%，tiny/small 全部 >98% | **任何離線小模型都無解**（訓練語料太少是根因），這 19 語已從清單移除。只有雲端大模型（NVIDIA Nemotron Transcribe 等）支援 |
+| **ML Kit 翻譯品質 = Google 離線同款** | 非英文對一律經英文中繼，且中間英文常走鐘 | 日→中/韓→中的譯文生硬甚至走鐘（鏈上最可信的是原文與中繼英文，App 因此把兩者都顯示出來） |
+| **粵語翻譯斷鏈** | SenseVoice 能辨識粵語，但 ML Kit 沒有 Cantonese 翻譯目標 | 粵語語音→文字可以，文字→翻譯不行，故清單不含 yue |
+| **系統語音引擎不可控** | 退回備援用的是 Google 系統引擎（短句導向、無標點、品質因裝置而異） | 不下載 SenseVoice 也能用，但長段口語易漏字——這是 Android 平台行為，無法修 |
+
+### 硬體與裝置需求
+
+| 項目 | 下限 | 原因 |
+|---|---|---|
+| **Android 版本** | 實測 Android 14（Xperia 5 IV） | `UNPROCESSED` 音源、ML Kit v2、sherpa-onnx AAR 都需要較新平台；更舊的裝置未驗證 |
+| **RAM** | 全配（SenseVoice+Whisper small+多語言包）建議 ≥ 6GB | SenseVoice 推論 + ML Kit 同時駐留；低階機會被系統殺背景 |
+| **儲存空間** | 只裝 App 70-90 MB；全配約 460 MB（詳見[安裝空間](#安裝空間--storage-footprint)） | 模型與語言包都是用戶自選下載，可逐項刪除 |
+| **CPU** | ONNX int8 推論走 CPU，無 GPU 加速 | 小模型在 snapdragon 8 級機種流暢；入門機種語音延遲會明顯變長 |
+
+### 工程上的取捨（fork 後想改要先懂這些）
+
+- **APK 內含 ~30MB 原生庫**（sherpa-onnx + onnxruntime）：不用 GPU 的代價；想瘦身要走 Play Feature Delivery 或拆輕量版
+- **模型不進版控**：SenseVoice 239MB / Whisper 375MB 由使用者首用時從 HuggingFace 下載——fork 後若要「開箱即用」，得自己處理模型分發（授權 SenseVoice 是 FunASR v1.1，非 MIT）
+- **AGC 增益上限 150 倍是實測調出來的**：遠場小聲輸入 -61~-67 dBFS 需要這麼大增益才不吃字首；調低重現「字首被吃」，調高可能爆音——動它之前先重跑韓文三段基準
+- **批次架構（錄完再轉）刻意捨棄串流**：連續串流在舊機不可靠（見架構節）；fork 想改回即時串流，先在最低目標裝置驗證
+
 ## 已知限制 / Known Limitations
 
 - **非英文對經英文樞紐**：ML Kit 的非英文翻譯對會經英文中繼（如泰→日 = 泰→英→日），品質打折；主流對（中英、中日）無此問題
@@ -197,7 +228,7 @@ gradlew.bat assembleDebug
 
 ## 維護狀態 / Maintenance
 
-本專案為**個人專案**：不保證回應 issue 或 PR，也不保證功能請求的實作時程。你可以自由 fork、自行維護（MIT 授權允許）。已知限制見上一節；各項技術取捨的理由都寫在程式碼註解與本文件，方便你自行接手。
+本專案為**個人專案**：不保證回應 issue 或 PR，也不保證功能請求的實作時程。你可以自由 fork、自行維護（MIT 授權允許）。fork 前請先讀[資源限制](#資源限制--resource-constraintsfork-前必讀)——模型能力、硬體下限、工程取捨都在那裡；已知限制見上一節；各項技術取捨的理由都寫在程式碼註解與本文件，方便你自行接手。
 
 ## 授權 / License
 
