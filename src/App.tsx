@@ -950,8 +950,10 @@ function App() {
       {tab === 'packs' && (
         <main className="packs-tab">
           <p className="packs-hint">
-            每個語言包約 50MB（實測 en/ja/ko/zh 各約 50MB），下載後該語言即可離線翻譯。
-            建議出國前在 WiFi 環境預先下載。
+            每個語言包約 50MB，下載後該語言即可離線翻譯。建議出國前在 WiFi 環境預先下載。
+            <br />
+            中英日韓語音辨識走 SenseVoice 高品質模型；其他標「語音實驗性」的語言走
+            Whisper 模型，語音品質依語言而異（文字翻譯不受影響）。
           </p>
           {packError && <p className="error">{packError}</p>}
           <ul className="pack-list">

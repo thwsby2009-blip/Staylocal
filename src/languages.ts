@@ -1,59 +1,48 @@
 /**
- * ML Kit 支援的語言清單（與 @capacitor-mlkit/translation 的 Language enum 對應）。
- * UI 顯示名稱用繁體中文。
+ * 語言清單（2026/11/24 依 ASR 品質重整）。
+ *
+ * tier 說明（依 OpenAI Whisper 論文 FLEURS 實測 WER + 母語人口篩選）：
+ * - 'sv'   SenseVoice 高品質離線辨識（zh/en/ja/ko/yue 五語言專屬）
+ * - 'good' Whisper small WER < 25% 且族群 ≥ 2500 萬 → 語音翻譯可用
+ * - 'edge' 品質勉強（WER 25-40%）或族群小 → 文字翻譯可用，語音不掛保證
+ * - 已移除：Whisper 全尺寸 WER > 35% 的語言（te/kn/ml/bn/gu/ta/ur/he/fa/mr/
+ *   sl/lv/lt/af/be/cy/sw 等）——紙面支援但語音輸出不可用，列了誤導使用者
  */
-export const LANGUAGES: { code: string; name: string }[] = [
-  { code: 'zh', name: '中文（輸出簡體，自動轉繁體）' },
-  { code: 'en', name: '英文' },
-  { code: 'ja', name: '日文' },
-  { code: 'ko', name: '韓文' },
-  { code: 'es', name: '西班牙文' },
-  { code: 'fr', name: '法文' },
-  { code: 'de', name: '德文' },
-  { code: 'it', name: '義大利文' },
-  { code: 'pt', name: '葡萄牙文' },
-  { code: 'ru', name: '俄文' },
-  { code: 'ar', name: '阿拉伯文' },
-  { code: 'hi', name: '印地文' },
-  { code: 'th', name: '泰文' },
-  { code: 'vi', name: '越南文' },
-  { code: 'id', name: '印尼文' },
-  { code: 'ms', name: '馬來文' },
-  { code: 'nl', name: '荷蘭文' },
-  { code: 'pl', name: '波蘭文' },
-  { code: 'tr', name: '土耳其文' },
-  { code: 'sv', name: '瑞典文' },
-  { code: 'da', name: '丹麥文' },
-  { code: 'no', name: '挪威文' },
-  { code: 'fi', name: '芬蘭文' },
-  { code: 'cs', name: '捷克文' },
-  { code: 'el', name: '希臘文' },
-  { code: 'he', name: '希伯來文' },
-  { code: 'hu', name: '匈牙利文' },
-  { code: 'ro', name: '羅馬尼亞文' },
-  { code: 'sk', name: '斯洛伐克文' },
-  { code: 'uk', name: '烏克蘭文' },
-  { code: 'bg', name: '保加利亞文' },
-  { code: 'hr', name: '克羅埃西亞文' },
-  { code: 'lt', name: '立陶宛文' },
-  { code: 'lv', name: '拉脫維亞文' },
-  { code: 'sl', name: '斯洛維尼亞文' },
-  { code: 'sr', name: '塞爾維亞文' },
-  { code: 'fa', name: '波斯文' },
-  { code: 'sw', name: '史瓦希里文' },
-  { code: 'bn', name: '孟加拉文' },
-  { code: 'ta', name: '坦米爾文' },
-  { code: 'te', name: '泰盧固文' },
-  { code: 'ur', name: '烏爾都文' },
-  { code: 'gu', name: '古吉拉特文' },
-  { code: 'kn', name: '康納達文' },
-  { code: 'ml', name: '馬拉雅拉姆文' },
-  { code: 'mr', name: '馬拉地文' },
-  { code: 'af', name: '南非荷蘭文' },
-  { code: 'be', name: '白俄羅斯文' },
-  { code: 'ca', name: '加泰蘭文' },
-  { code: 'cy', name: '威爾斯文' },
-  { code: 'et', name: '愛沙尼亞文' },
+export type LangTier = 'sv' | 'good' | 'edge'
+export const LANGUAGES: { code: string; name: string; tier: LangTier }[] = [
+  { code: 'zh', name: '中文（輸出簡體，自動轉繁體）', tier: 'sv' },
+  { code: 'en', name: '英文', tier: 'sv' },
+  { code: 'ja', name: '日文', tier: 'sv' },
+  { code: 'ko', name: '韓文', tier: 'sv' },
+  // yue（粵語）不在 LANGUAGES：ML Kit Translation 無 Cantonese，無法翻成目標語言；
+  // SenseVoice 雖支援 yue 辨識，但翻譯層斷鏈。粵語辨識需求走 zh 或 App 外處理。
+  { code: 'es', name: '西班牙文', tier: 'good' },
+  { code: 'fr', name: '法文', tier: 'good' },
+  { code: 'pt', name: '葡萄牙文', tier: 'good' },
+  { code: 'ru', name: '俄文', tier: 'good' },
+  { code: 'de', name: '德文', tier: 'good' },
+  { code: 'it', name: '義大利文', tier: 'good' },
+  { code: 'id', name: '印尼文', tier: 'good' },
+  { code: 'tr', name: '土耳其文', tier: 'good' },
+  { code: 'vi', name: '越南文', tier: 'good' },
+  { code: 'th', name: '泰文', tier: 'good' },
+  { code: 'ms', name: '馬來文', tier: 'good' },
+  { code: 'pl', name: '波蘭文', tier: 'good' },
+  { code: 'uk', name: '烏克蘭文', tier: 'good' },
+  { code: 'nl', name: '荷蘭文', tier: 'good' },
+  { code: 'ar', name: '阿拉伯文（語音實驗性）', tier: 'edge' },
+  { code: 'hi', name: '印地文（語音實驗性）', tier: 'edge' },
+  { code: 'ro', name: '羅馬尼亞文（語音實驗性）', tier: 'edge' },
+  { code: 'el', name: '希臘文（語音實驗性）', tier: 'edge' },
+  { code: 'da', name: '丹麥文（語音實驗性）', tier: 'edge' },
+  { code: 'no', name: '挪威文（語音實驗性）', tier: 'edge' },
+  { code: 'sv', name: '瑞典文（語音實驗性）', tier: 'edge' },
+  { code: 'fi', name: '芬蘭文（語音實驗性）', tier: 'edge' },
+  { code: 'cs', name: '捷克文（語音實驗性）', tier: 'edge' },
+  { code: 'sk', name: '斯洛伐克文（語音實驗性）', tier: 'edge' },
+  { code: 'hr', name: '克羅埃西亞文（語音實驗性）', tier: 'edge' },
+  { code: 'hu', name: '匈牙利文（語音實驗性）', tier: 'edge' },
+  { code: 'he', name: '希伯來文（語音實驗性）', tier: 'edge' },
 ]
 
 export function languageName(code: string): string {
