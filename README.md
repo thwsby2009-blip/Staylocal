@@ -23,6 +23,8 @@
 
 2026/11/24 起語言清單依 **OpenAI Whisper 論文的 FLEURS 實測 WER（詞錯誤率）＋母語人口** 重整——紙面支援但語音輸出不可用的語言已移除（如泰盧固文：Whisper 連 large 模型 WER 都 98%，列在清單上只會讓使用者白費時間）。
 
+> 📎 **每個數字的來源與性質**（公開基準 vs 本專案實測）逐項列在 [docs/language-tier-sources.md](docs/language-tier-sources.md)——含全語言 WER 表、Staylocal 五項實測的條件與結果、以及重現步驟。
+
 | 級別 | 語言 | 條件 | 說明 |
 |---|---|---|---|
 | **sv**（高品質） | 中文、英文、日文、韓文 | SenseVoice 專屬五語言 | 離線語音辨識品質最佳，自動標點；粵語辨識支援但 ML Kit 無 Cantonese 翻譯目標，故不在清單 |
