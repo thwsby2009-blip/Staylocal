@@ -4,6 +4,7 @@ import {
   resetConverterCacheForTests,
   shouldRelayViaEnglish,
   fixShortInputTranslation,
+  fixPhrasesInTranslation,
 } from './translationService'
 
 // Mock Capacitor 插件層（原生橋接在單元測試不存在）
@@ -111,5 +112,42 @@ describe('fixShortInputTranslation（極短輸入詞義修正）', () => {
 
   it('大小寫不限：STOP → 停', () => {
     expect(fixShortInputTranslation('STOP', '停止')).toBe('停')
+  })
+
+  it('大小寫不限：Extremely → 非常（2026-11-29 電影實測）', () => {
+    expect(fixShortInputTranslation('Extremely.', '極。')).toBe('非常')
+  })
+})
+
+describe('fixPhrasesInTranslation（片語級慣用語修正）', () => {
+  it('雙門檻都命中：put your life on the line +「放在那裡」→ 冒生命危險', () => {
+    expect(
+      fixPhrasesInTranslation(
+        'you never have to put your life on the line ever again',
+        '你永遠不必再次把你的生命放在那裡',
+      ),
+    ).toBe('你永遠不必再次冒生命危險')
+  })
+
+  it('來源沒有片語就不動手（譯文撞到壞字串也一樣）', () => {
+    expect(fixPhrasesInTranslation('hello world', '把你的生命放在那裡')).toBe(
+      '把你的生命放在那裡',
+    )
+  })
+
+  it('來源有片語但譯文沒有壞譯法就不動手（ML Kit 譯對了）', () => {
+    expect(fixPhrasesInTranslation('this kind of money', '這樣的錢')).toBe('這樣的錢')
+  })
+
+  it('for a reason：有理由 → 是有原因的', () => {
+    expect(fixPhrasesInTranslation('those are new zones for a reason', '那些是新區，有理由')).toBe(
+      '那些是新區，是有原因的',
+    )
+  })
+
+  it("isn't himself：不是他自己 → 狀態不太對", () => {
+    expect(fixPhrasesInTranslation("Felix isn't himself today", '菲利克斯不是他自己')).toBe(
+      '菲利克斯狀態不太對',
+    )
   })
 })

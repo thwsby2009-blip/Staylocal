@@ -82,6 +82,8 @@ export async function translateText(
   // 極短輸入（單一英文詞）的詞義修正：ML Kit 短輸入會選錯最高頻詞義（Move→搬家）
   const shortFix = fixShortInputTranslation(text, output)
   if (shortFix) output = shortFix
+  // 片語級修正（慣用語直譯）：來源與譯文都命中才替換
+  output = fixPhrasesInTranslation(text, output)
   return output
 }
 
@@ -114,6 +116,36 @@ const SHORT_INPUT_FIXES: Record<string, string> = {
   left: '左邊',
   stop: '停',
   wait: '等等',
+  extremely: '非常',
+  no: '不',
+}
+
+/**
+ * 片語級修正（2026-11-29 電影實測第二批）：慣用語直譯是譯文不通的主因
+ * （如 on the line →「放在那裡」）。雙門檻保險：英文來源含該片語「且」
+ * ML Kit 譯文含對應壞譯法，才替換——兩道條件都成立才動手，不會誤傷
+ * 其他語境。比單字表寬（片語本身帶語境），但仍只收慣用語，不收一般詞。
+ */
+type PhraseFix = { en: string; bad: string; good: string }
+
+const PHRASE_FIXES: PhraseFix[] = [
+  { en: 'put your life on the line', bad: '把你的生命放在那裡', good: '冒生命危險' },
+  { en: 'this kind of money', bad: '這種金錢', good: '這筆錢' },
+  { en: 'for a reason', bad: '有理由', good: '是有原因的' },
+  { en: 'go there and die', bad: '去那裡死亡', good: '去那裡送死' },
+  { en: "isn't himself", bad: '不是他自己', good: '狀態不太對' },
+]
+
+/** 片語級修正：來源與譯文都命中才替換（見 PHRASE_FIXES 說明） */
+export function fixPhrasesInTranslation(sourceText: string, translated: string): string {
+  let out = translated
+  const src = sourceText.toLowerCase()
+  for (const { en, bad, good } of PHRASE_FIXES) {
+    if (src.includes(en) && out.includes(bad)) {
+      out = out.replace(bad, good)
+    }
+  }
+  return out
 }
 
 /**
