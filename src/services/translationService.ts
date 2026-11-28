@@ -152,7 +152,7 @@ export function fixPhrasesInTranslation(sourceText: string, translated: string):
  * 極短輸入的詞義修正：只處理「單一英文詞（可帶標點）」的輸入。
  * 回傳 null 表示不適用（長句、非表內單字），呼叫端沿用 ML Kit 原譯文。
  */
-export function fixShortInputTranslation(sourceText: string, translated: string): string | null {
+export function fixShortInputTranslation(sourceText: string, _translated: string): string | null {
   const m = sourceText.trim().match(/^[a-zA-Z]+[!.?]?$/)
   if (!m) return null
   const fix = SHORT_INPUT_FIXES[sourceText.trim().toLowerCase().replace(/[!.?]$/, '')]
