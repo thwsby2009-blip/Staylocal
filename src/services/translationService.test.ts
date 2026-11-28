@@ -3,6 +3,7 @@ import {
   translateText,
   resetConverterCacheForTests,
   shouldRelayViaEnglish,
+  fixShortInputTranslation,
 } from './translationService'
 
 // Mock Capacitor 插件層（原生橋接在單元測試不存在）
@@ -84,5 +85,31 @@ describe('translateText', () => {
     await expect(translateText('hello', 'en', 'zh')).rejects.toThrow(
       'model not downloaded',
     )
+  })
+})
+
+describe('fixShortInputTranslation（極短輸入詞義修正）', () => {
+  it('表內單字：Move → 移動（ML Kit 短輸入最高頻詞義「搬家」的修正）', () => {
+    expect(fixShortInputTranslation('Move', '搬家')).toBe('移動')
+  })
+
+  it('帶標點也適用：Move! → 移動', () => {
+    expect(fixShortInputTranslation('Move!', '搬家！')).toBe('移動')
+  })
+
+  it('句子級輸入不適用（語境詞義該由句子決定）', () => {
+    expect(fixShortInputTranslation("I'm moving next week", '我下週搬家')).toBeNull()
+  })
+
+  it('兩詞以上不適用', () => {
+    expect(fixShortInputTranslation('Move forward', '向前移動')).toBeNull()
+  })
+
+  it('表外單字回 null（沿用 ML Kit 原譯文）', () => {
+    expect(fixShortInputTranslation('hello', '你好')).toBeNull()
+  })
+
+  it('大小寫不限：STOP → 停', () => {
+    expect(fixShortInputTranslation('STOP', '停止')).toBe('停')
   })
 })

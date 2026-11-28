@@ -79,12 +79,52 @@ export async function translateText(
   if (isChinese(targetLanguage)) {
     output = getTwConverter()(output)
   }
+  // 極短輸入（單一英文詞）的詞義修正：ML Kit 短輸入會選錯最高頻詞義（Move→搬家）
+  const shortFix = fixShortInputTranslation(text, output)
+  if (shortFix) output = shortFix
   return output
 }
 
 /** 簡體 → 台灣繁體（含詞彙轉換）：離線語音模型輸出簡體時使用 */
 export function toTaiwanTraditional(text: string): string {
   return getTwConverter()(text)
+}
+
+/**
+ * 極短片段（單字／兩詞以下）的 ML Kit 詞義修正表。
+ *
+ * 背景：ML Kit 是統計翻譯，輸入越短越依賴訓練語料的最高頻詞義。
+ * 單獨出現的「Move」在生活語料裡最高頻的詞義是「搬家」，但字幕／對白場景
+ * 單獨一句的「Move!」幾乎都是祈使句（移動／走開）。只對「極短、無上下文」
+ * 的片段套用此表——句子級翻譯不碰（語境詞義該由句子決定，靜態替換會把
+ * 「I'm moving next week」的 moving 改錯）。
+ *
+ * 維護方式：從實測的 livePair log（logcat 可拉原文＋譯文對照）發現單字
+ * 高頻錯譯就加一條；只收「錯譯明顯多於正譯」的條目，寧缺勿濫。
+ */
+const SHORT_INPUT_FIXES: Record<string, string> = {
+  // 英文原詞（小寫比對）→ 修正譯文
+  move: '移動',
+  run: '跑',
+  drive: '開車',
+  play: '播放',
+  watch: '看',
+  mean: '意思是',
+  right: '對',
+  left: '左邊',
+  stop: '停',
+  wait: '等等',
+}
+
+/**
+ * 極短輸入的詞義修正：只處理「單一英文詞（可帶標點）」的輸入。
+ * 回傳 null 表示不適用（長句、非表內單字），呼叫端沿用 ML Kit 原譯文。
+ */
+export function fixShortInputTranslation(sourceText: string, translated: string): string | null {
+  const m = sourceText.trim().match(/^[a-zA-Z]+[!.?]?$/)
+  if (!m) return null
+  const fix = SHORT_INPUT_FIXES[sourceText.trim().toLowerCase().replace(/[!.?]$/, '')]
+  return fix ? fix : null
 }
 
 /**
