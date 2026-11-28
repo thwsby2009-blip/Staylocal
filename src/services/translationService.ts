@@ -134,6 +134,9 @@ const PHRASE_FIXES: PhraseFix[] = [
   { en: 'for a reason', bad: '有理由', good: '是有原因的' },
   { en: 'go there and die', bad: '去那裡死亡', good: '去那裡送死' },
   { en: "isn't himself", bad: '不是他自己', good: '狀態不太對' },
+  { en: 'good faith gesture', bad: '善良的姿態', good: '善意的表示' },
+  // move up to（語序錯置「向巴貝多搬到」）沒有安全的短 bad 字串——單字「向」會誤傷
+  // 「向前移動」等正常譯文。等收集到更長的實際壞譯法再加。
 ]
 
 /** 片語級修正：來源與譯文都命中才替換（見 PHRASE_FIXES 說明） */
