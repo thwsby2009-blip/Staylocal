@@ -126,26 +126,45 @@ const SHORT_INPUT_FIXES: Record<string, string> = {
  * ML Kit 譯文含對應壞譯法，才替換——兩道條件都成立才動手，不會誤傷
  * 其他語境。比單字表寬（片語本身帶語境），但仍只收慣用語，不收一般詞。
  */
-type PhraseFix = { en: string; bad: string; good: string }
+type PhraseFix = { en: string; bad: string[]; good: string }
 
 const PHRASE_FIXES: PhraseFix[] = [
-  { en: 'put your life on the line', bad: '把你的生命放在那裡', good: '冒生命危險' },
-  { en: 'this kind of money', bad: '這種金錢', good: '這筆錢' },
-  { en: 'for a reason', bad: '有理由', good: '是有原因的' },
-  { en: 'go there and die', bad: '去那裡死亡', good: '去那裡送死' },
-  { en: "isn't himself", bad: '不是他自己', good: '狀態不太對' },
-  { en: 'good faith gesture', bad: '善良的姿態', good: '善意的表示' },
+  {
+    en: 'put your life on the line',
+    bad: ['把你的生命放在那裡'],
+    good: '冒生命危險',
+  },
+  { en: 'this kind of money', bad: ['這種金錢'], good: '這筆錢' },
+  { en: 'for a reason', bad: ['有理由'], good: '是有原因的' },
+  { en: 'go there and die', bad: ['去那裡死亡'], good: '去那裡送死' },
+  { en: "isn't himself", bad: ['不是他自己'], good: '狀態不太對' },
+  { en: 'good faith gesture', bad: ['善良的姿態'], good: '善意的表示' },
+  {
+    // 2026-11-29 TED（Meg Jay）實測：全片高頻詞，ML Kit 拆開亂譯成多種變體——
+    // 一條修全片。bad 列表會隨實測繼續補。
+    en: '20 somethings',
+    bad: ['20個人', '20個小', '20個東西', '20件事', '20個的東西', '20 歲的一些事情'],
+    good: '二十多歲的人',
+  },
+  { en: 'weak ties', bad: ['弱領帶'], good: '弱連結' }, // 社會學術語（Granovetter）
+  { en: 'taking your family', bad: ['服用你的家人'], good: '建立你的家庭' }, // take 誤譯
+  { en: 'so relieved', bad: ['被釋放'], good: '鬆了一口氣' },
+  { en: 'walking down the aisle', bad: ['走在走道上'], good: '步上紅毯' },
   // move up to（語序錯置「向巴貝多搬到」）沒有安全的短 bad 字串——單字「向」會誤傷
   // 「向前移動」等正常譯文。等收集到更長的實際壞譯法再加。
 ]
 
-/** 片語級修正：來源與譯文都命中才替換（見 PHRASE_FIXES 說明） */
+/** 片語級修正：來源與譯文都命中才替換（見 PHRASE_FIXES 說明）。bad 支援多變體。 */
 export function fixPhrasesInTranslation(sourceText: string, translated: string): string {
   let out = translated
   const src = sourceText.toLowerCase()
   for (const { en, bad, good } of PHRASE_FIXES) {
-    if (src.includes(en) && out.includes(bad)) {
-      out = out.replace(bad, good)
+    if (!src.includes(en)) continue
+    for (const b of bad) {
+      if (out.includes(b)) {
+        out = out.replace(b, good)
+        break
+      }
     }
   }
   return out
